@@ -12,6 +12,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- CodeGraph can now integrate with Engram (persistent memory for AI agents) to enrich code exploration with project memory and automatically sync key insights after indexing. Enable with `CODEGRAPH_ENGRAM_ENABLED=1` and use `codegraph_explore_with_memory` to get code flow plus relevant project context in one call. The integration is non-blocking and gracefully degrades when Engram is unavailable.
+
 ### Fixes
 
 - In VB.NET, every member of a `Structure` is now indexed, including its fields, properties, methods, constructors and nested enums. Before, only the first member was, so the rest could not be found and their callers looked empty.

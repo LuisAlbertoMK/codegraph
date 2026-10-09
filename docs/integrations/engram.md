@@ -1,0 +1,187 @@
+# Engram Integration
+
+CodeGraph can integrate with [Engram](https://github.com/Gentleman-Programming/engram) to provide persistent memory for AI coding agents. This integration allows agents to:
+
+1. **Explore code with memory context** — `codegraph_explore_with_memory` enriches code flow results with relevant project memory from Engram
+2. **Auto-sync insights** — after indexing, key symbols and flows are automatically persisted to Engram for cross-session recall
+
+## Architecture
+
+```
+CodeGraph (TypeScript/Node)          Engram (Go/SQLite)
+┌─────────────────────────┐          ┌─────────────────────────┐
+│  index/sync             │          │  HTTP API + MCP         │
+│    ↓ post-index hook     │          │    POST /observations   │
+│  insight extractor       │──────────│    GET /search          │
+│    ↓                     │  HTTP    │                         │
+│  engram-client           │          │  Observations stored    │
+│                         │          │  with dedup keys        │
+│  MCP server              │          │                         │
+│    explore_with_memory   │          │                         │
+│    ↓                     │          │                         │
+│  Agent gets flow + memory│          │                         │
+└─────────────────────────┘          └─────────────────────────┘
+```
+
+## Configuration
+
+### Enable Engram Sync
+
+Set the environment variable before running CodeGraph:
+
+```bash
+export CODEGRAPH_ENGRAM_ENABLED=1
+export ENGRAM_URL=http://localhost:4199  # Engram HTTP API URL
+```
+
+### Disable Engram Sync
+
+```bash
+unset CODEGRAPH_ENGRAM_ENABLED
+# or
+export CODEGRAPH_ENGRAM_ENABLED=0
+```
+
+## MCP Tools
+
+### `codegraph_explore_with_memory`
+
+Same as `codegraph_explore` but automatically enriches results with relevant project memory from Engram.
+
+**Parameters:**
+- `query` (string, required) — Symbol names, file names, or code terms to explore
+- `maxFiles` (number, optional) — Maximum files to include source from (default: 12)
+- `projectPath` (string, optional) — Project path
+- `includeMemory` (boolean, optional) — Whether to enrich with Engram memory (default: true)
+
+**Behavior:**
+1. Calls normal `codegraph_explore` to get code flow
+2. Searches Engram for relevant memory (top 3 results)
+3. Prepends memory section to explore output
+4. Gracefully degrades to normal explore if Engram is unavailable
+
+**Example output:**
+```
+**Project Memory (from Engram)**
+
+- **CodeGraph — 782 callers, 1270 impacted** (symbol, score: 1)
+  Symbol: CodeGraph
+  File: src/index.ts:149
+  Callers: 782 (indexAll, sync, open, ...)
+  Impact: 1270 nodes affected
+
+---
+
+**Exploration: CodeGraph.indexAll**
+
+Found 83 symbols across 5 files.
+...
+```
+
+## Insight Extraction
+
+After each index/sync, CodeGraph extracts key insights and persists them to Engram:
+
+### Insight Types
+
+- **symbol** — Top symbols by caller count and impact radius
+- **flow** — Call paths through central symbols
+- **pattern** — Detected design patterns (future)
+- **architecture** — High-level architectural insights (future)
+
+### Extraction Criteria
+
+- Minimum 3 callers (direct)
+- Minimum 5 nodes in impact radius
+- Maximum 50 insights per sync (configurable)
+- Confidence score based on caller count + impact radius
+
+### Deduplication
+
+Each insight carries a `deduplication_key`:
+```
+codegraph:{project}:{qualified_name}
+```
+
+Re-indexing updates existing observations instead of duplicating them.
+
+## Benchmarks
+
+### Baseline (without Engram)
+
+- Average explore latency: 2437ms
+- Total output: 124K chars
+
+### With Engram Integration
+
+- Average explore latency: 2395ms
+- Memory enrichment overhead: 80ms (3.5%)
+- Insight sync: ~2s for 10 insights (non-blocking)
+
+See `docs/benchmarks/engram-integration-baseline.json` and `docs/benchmarks/engram-integration-post-implementation.json` for full results.
+
+## Development
+
+### Engram Stub Server
+
+For development without a real Engram instance:
+
+```bash
+node scripts/engram-stub.mjs
+# or
+ENGRAM_STUB_PORT=5000 node scripts/engram-stub.mjs
+```
+
+### Integration Test
+
+```bash
+node scripts/test-engram-integration.mjs
+```
+
+### Benchmarks
+
+```bash
+# Baseline (before changes)
+node scripts/benchmark-baseline.mjs
+
+# Post-implementation (after changes)
+node scripts/benchmark-post-implementation.mjs
+```
+
+## Implementation Details
+
+### Files
+
+- `src/integrations/engram-sync.ts` — Insight extractor + Engram HTTP client
+- `src/mcp/tools.ts` — `explore_with_memory` MCP tool
+- `src/index.ts` — Post-index hook + `syncInsightsToEngram()` method
+- `scripts/engram-stub.mjs` — Development stub server
+- `scripts/test-engram-integration.mjs` — Integration test
+- `scripts/benchmark-baseline.mjs` — Baseline benchmark
+- `scripts/benchmark-post-implementation.mjs` — Post-implementation benchmark
+
+### Post-Index Hook
+
+The hook is non-blocking (fire-and-forget) and never fails the sync:
+
+```typescript
+// In sync() and indexAll()
+if (process.env.CODEGRAPH_ENGRAM_ENABLED === '1') {
+  this.syncInsightsToEngram().catch(() => { /* never fail sync over Engram */ });
+}
+```
+
+### Graceful Degradation
+
+If Engram is unavailable:
+- `explore_with_memory` returns normal explore results
+- Post-index sync logs the error but doesn't fail
+- All functionality works without Engram
+
+## Future Work
+
+- [ ] Bi-directional sync (Engram → CodeGraph context)
+- [ ] Real-time sync via Engram MCP
+- [ ] Configurable insight thresholds
+- [ ] Insight quality scoring
+- [ ] Memory decay (forget unused insights)

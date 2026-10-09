@@ -1212,6 +1212,12 @@ export class CodeGraph {
         if (fullReconcile && result.filesChecked > 0) this.pendingFullReconcile = false;
         // The whole sync, as for indexAll: resolution and linking included (#2334).
         result.durationMs = Date.now() - startedAt;
+
+        // Post-index hook: sync insights to Engram (non-blocking, fire-and-forget)
+        if (process.env.CODEGRAPH_ENGRAM_ENABLED === '1') {
+          this.syncInsightsToEngram().catch(() => { /* never fail sync over Engram */ });
+        }
+
         return result;
       } finally {
         // Mirror indexAll's teardown: stop the valve, then restore the
@@ -2414,6 +2420,40 @@ export class CodeGraph {
    */
   async getCode(nodeId: string): Promise<string | null> {
     return this.contextBuilder.getCode(nodeId);
+  }
+
+  /**
+   * Sync insights to Engram (persistent memory).
+   *
+   * Non-blocking: fire-and-forget from sync/index. Never throws.
+   * Extracts top symbols by centrality and persists them to Engram
+   * for cross-session recall.
+   */
+  async syncInsightsToEngram(): Promise<void> {
+    try {
+      const { extractInsights, syncInsightsToEngram: sync } = await import('./integrations/engram-sync');
+      const project = this.getProjectRoot().split(/[\\/]/).pop() || 'unknown';
+
+      console.log(`[codegraph] Extracting insights for Engram sync (project: ${project})...`);
+      const insights = await extractInsights(this, {
+        maxInsights: 30,
+        minCallers: 3,
+        minImpact: 5,
+        project,
+        includeFlows: true,
+      });
+
+      if (insights.length === 0) {
+        console.log('[codegraph] No insights to sync.');
+        return;
+      }
+
+      const result = await sync(insights);
+      console.log(`[codegraph] Engram sync complete: ${result.created} created, ${result.updated} updated, ${result.failed} failed.`);
+    } catch (err) {
+      // Never fail sync/index over Engram
+      console.error(`[codegraph] Engram sync failed: ${err}`);
+    }
   }
 
   /**
