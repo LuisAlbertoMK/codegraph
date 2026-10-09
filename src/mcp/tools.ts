@@ -1748,7 +1748,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_explore_with_memory',
-    description: 'MEMORY-ENRICHED EXPLORE — same as codegraph_explore but automatically enriches results with relevant project memory from Engram (persistent memory). Use this when you want code flow + accumulated project context in one call. Gracefully degrades to normal explore if Engram is unavailable. Best for: understanding how code works in the context of past decisions, known patterns, and architecturalural insights.',
+    description: 'MEMORY-ENRICHED EXPLORE — same as codegraph_explore but automatically enriches results with relevant project memory from Engram (persistent memory). Use this when you want code flow + accumulated project context in one call. Gracefully degrades to normal explore if Engram is unavailable. Best for: understanding how code works in the context of past decisions, known patterns, and architectural insights.',
     inputSchema: {
       type: 'object',
       properties: {

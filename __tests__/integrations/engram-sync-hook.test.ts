@@ -263,5 +263,13 @@ export class UserController {
       // Sync should complete without throwing (graceful degradation)
       await expect(cg.sync()).resolves.not.toThrow();
     });
+
+    it('should complete indexAll without error when Engram enabled', async () => {
+      process.env.CODEGRAPH_ENGRAM_ENABLED = '1';
+      process.env.ENGRAM_URL = engramUrl;
+
+      // indexAll should complete without throwing (post-index hook fires)
+      await expect(cg.indexAll()).resolves.not.toThrow();
+    });
   });
 });
