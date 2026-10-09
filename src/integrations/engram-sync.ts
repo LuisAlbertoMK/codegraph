@@ -14,7 +14,7 @@
  */
 
 import type CodeGraph from '../index';
-import type { Node } from '../types';
+import type { Edge, Node, Subgraph } from '../types';
 
 // ============================================================================
 // Types
@@ -99,8 +99,9 @@ export async function extractInsights(
     .concat(graph.getNodesByKind('class'))
     .concat(graph.getNodesByKind('interface'));
 
-  // Score each node by centrality
-  const scored: Array<{ node: Node; callerCount: number; impactCount: number; score: number }> = [];
+  // Score each node by centrality.
+  // Traversals are kept for the build pass below — each node is walked once.
+  const scored: Array<{ node: Node; callers: Array<{ node: Node; edge: Edge }>; impact: Subgraph; callerCount: number; impactCount: number; score: number }> = [];
 
   for (const node of allNodes) {
     // Count callers (direct)
@@ -118,7 +119,7 @@ export async function extractInsights(
     // Centrality score: callers * log(impact + 1)
     const score = callerCount * Math.log(impactCount + 1);
 
-    scored.push({ node, callerCount, impactCount, score });
+    scored.push({ node, callers, impact, callerCount, impactCount, score });
   }
 
   // Sort by score descending
@@ -130,10 +131,7 @@ export async function extractInsights(
   // Build insights
   const insights: CodeGraphInsight[] = [];
 
-  for (const { node, callerCount, impactCount } of top) {
-    const callers = graph.getCallers(node.id, 1);
-    const impact = graph.getImpactRadius(node.id, 2);
-
+  for (const { node, callers, impact, callerCount, impactCount } of top) {
     const topCallers = callers
       .slice(0, 5)
       .map(c => c.node.name);
