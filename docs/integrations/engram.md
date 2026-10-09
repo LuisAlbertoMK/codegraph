@@ -4,6 +4,7 @@ CodeGraph can integrate with [Engram](https://github.com/Gentleman-Programming/e
 
 1. **Explore code with memory context** — `codegraph_explore_with_memory` enriches code flow results with relevant project memory from Engram
 2. **Auto-sync insights** — after indexing, key symbols and flows are automatically persisted to Engram for cross-session recall
+3. **Search memory directly** — `codegraph_memory_search` recalls past decisions and insights with no code flow, so a single CodeGraph MCP server covers code + memory (no second MCP server needed)
 
 ## Architecture
 
@@ -77,6 +78,21 @@ Same as `codegraph_explore` but automatically enriches results with relevant pro
 Found 83 symbols across 5 files.
 ...
 ```
+
+### `codegraph_memory_search`
+
+Direct recall over persistent memory — no code flow. Pairs with `codegraph_explore` (or use `codegraph_explore_with_memory` for both in one call).
+
+**Parameters:**
+- `query` (string, required) — What to recall (symbol names, topics, or questions about past work)
+- `limit` (number, optional) — Maximum memories to return (default: 5, max: 50)
+- `project` (string, optional) — Engram project name (exact match)
+- `projectPath` (string, optional) — Falls back to the indexed project name (directory basename), the same derivation the post-index hook uses
+
+**Behavior:**
+1. Searches Engram for relevant memory (top results by relevance)
+2. Returns titled memories with type and score
+3. Returns gracefully (never errors) when Engram is unavailable or nothing matches
 
 ## Insight Extraction
 

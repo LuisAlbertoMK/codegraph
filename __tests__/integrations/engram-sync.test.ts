@@ -14,6 +14,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { spawn, ChildProcess } from 'node:child_process';
 import CodeGraph from '../../src/index';
+import { ToolHandler } from '../../src/mcp/tools';
 import {
   extractInsights,
   syncInsightsToEngram,
@@ -260,6 +261,37 @@ export { controller };
       const flowInsights = insights.filter(i => i.type === 'flow');
       expect(flowInsights.length).toBe(0);
     });
+
+    it('two-stage ranking matches full brute-force scoring', async () => {
+      const maxInsights = 5;
+      const insights = await extractInsights(cg, {
+        maxInsights,
+        minCallers: 1,
+        minImpact: 1,
+        project: 'test-project',
+        includeFlows: false,
+      });
+
+      // Brute force over the full corpus (no candidate pool)
+      const corpus = [
+        ...cg.getNodesByKind('function'),
+        ...cg.getNodesByKind('method'),
+        ...cg.getNodesByKind('class'),
+        ...cg.getNodesByKind('interface'),
+      ];
+      const expected = corpus
+        .map((node) => {
+          const callerCount = cg.getCallers(node.id, 1).length;
+          const impactCount = cg.getImpactRadius(node.id, 2).nodes?.size || 0;
+          return { node, callerCount, impactCount, score: callerCount * Math.log(impactCount + 1) };
+        })
+        .filter((r) => r.callerCount >= 1 && r.impactCount >= 1)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, maxInsights)
+        .map((r) => r.node.qualifiedName);
+
+      expect(insights.map((i) => i.qualifiedName)).toEqual(expected);
+    });
   });
 
   // =========================================================================
@@ -431,6 +463,74 @@ export { controller };
 
       expect(searchResults.length).toBeGreaterThan(0);
       expect(searchResults[0].title).toContain(insights[0].name);
+    });
+  });
+
+  // =========================================================================
+  // codegraph_memory_search MCP tool (single-MCP memory recall)
+  // =========================================================================
+
+  describe('codegraph_memory_search tool', () => {
+    let handler: ToolHandler;
+
+    beforeAll(() => {
+      handler = new ToolHandler(cg);
+      process.env.ENGRAM_URL = engramUrl;
+    });
+
+    afterAll(() => {
+      delete process.env.ENGRAM_URL;
+    });
+
+    it('returns matching memories for a seeded query', async () => {
+      const insights = await extractInsights(cg, {
+        maxInsights: 5,
+        minCallers: 1,
+        minImpact: 1,
+        project: 'tool-test',
+      });
+      await syncInsightsToEngram(insights, engramUrl);
+
+      const res = await handler.execute('codegraph_memory_search', {
+        query: 'AuthService',
+        project: 'tool-test',
+      });
+
+      expect(res.isError).toBe(false);
+      const text = ((res.content?.[0] as unknown as { text?: string })?.text || '');
+      expect(text).toContain('Project Memory');
+      expect(text).toContain('AuthService');
+    });
+
+    it('derives the project from projectPath basename', async () => {
+      const dirName = path.basename(testDir);
+      const insights = await extractInsights(cg, {
+        maxInsights: 5,
+        minCallers: 1,
+        minImpact: 1,
+        project: dirName,
+      });
+      await syncInsightsToEngram(insights, engramUrl);
+
+      const res = await handler.execute('codegraph_memory_search', {
+        query: 'AuthService',
+        projectPath: testDir,
+      });
+
+      expect(res.isError).toBe(false);
+      expect(((res.content?.[0] as unknown as { text?: string })?.text || '')).toContain('AuthService');
+    });
+
+    it('degrades gracefully when Engram is unavailable', async () => {
+      process.env.ENGRAM_URL = 'http://localhost:59999';
+      const res = await handler.execute('codegraph_memory_search', {
+        query: 'AuthService',
+        project: 'tool-test',
+      });
+      process.env.ENGRAM_URL = engramUrl;
+
+      expect(res.isError).toBe(false);
+      expect(((res.content?.[0] as unknown as { text?: string })?.text || '')).toContain('No matching project memory');
     });
   });
 });
