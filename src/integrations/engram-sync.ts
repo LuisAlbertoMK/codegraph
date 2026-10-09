@@ -14,7 +14,7 @@
  */
 
 import type CodeGraph from '../index';
-import type { Edge, Node, Subgraph } from '../types';
+import type { Node, Subgraph } from '../types';
 
 // ============================================================================
 // Types
@@ -99,27 +99,31 @@ export async function extractInsights(
     .concat(graph.getNodesByKind('class'))
     .concat(graph.getNodesByKind('interface'));
 
-  // Score each node by centrality.
-  // Traversals are kept for the build pass below — each node is walked once.
-  const scored: Array<{ node: Node; callers: Array<{ node: Node; edge: Edge }>; impact: Subgraph; callerCount: number; impactCount: number; score: number }> = [];
+  // Two-stage ranking: a caller lookup is cheap (~0.15ms) while the depth-2
+  // impact walk is ~10x costlier and dominates extraction on large repos.
+  // Rank by callers first, then score centrality only for a generous candidate
+  // pool. Validated on a 12k-node repo: top-30-by-score sits inside
+  // top-50-by-callers (overlap probe), so IMPACT_POOL = 200 keeps 4x headroom.
+  // The pool always covers maxInsights so a large maxInsights can't clip it.
+  const IMPACT_POOL = 200;
+  const poolSize = Math.max(IMPACT_POOL, maxInsights);
 
+  const byCallers: Array<{ node: Node; callerCount: number }> = [];
   for (const node of allNodes) {
-    // Count callers (direct)
-    const callers = graph.getCallers(node.id, 1);
-    const callerCount = callers.length;
-
+    const callerCount = graph.getCallers(node.id, 1).length;
     if (callerCount < minCallers) continue;
+    byCallers.push({ node, callerCount });
+  }
+  byCallers.sort((a, b) => b.callerCount - a.callerCount);
 
-    // Get impact radius
+  // Score centrality for the pool only (impact computed once, reused below)
+  const scored: Array<{ node: Node; impact: Subgraph; callerCount: number; impactCount: number; score: number }> = [];
+  for (const { node, callerCount } of byCallers.slice(0, poolSize)) {
     const impact = graph.getImpactRadius(node.id, 2);
     const impactCount = impact.nodes?.size || 0;
-
     if (impactCount < minImpact) continue;
-
-    // Centrality score: callers * log(impact + 1)
     const score = callerCount * Math.log(impactCount + 1);
-
-    scored.push({ node, callers, impact, callerCount, impactCount, score });
+    scored.push({ node, impact, callerCount, impactCount, score });
   }
 
   // Sort by score descending
@@ -131,7 +135,9 @@ export async function extractInsights(
   // Build insights
   const insights: CodeGraphInsight[] = [];
 
-  for (const { node, callers, impact, callerCount, impactCount } of top) {
+  for (const { node, impact, callerCount, impactCount } of top) {
+    // Caller names only for the final top-N — one cheap lookup each
+    const callers = graph.getCallers(node.id, 1);
     const topCallers = callers
       .slice(0, 5)
       .map(c => c.node.name);

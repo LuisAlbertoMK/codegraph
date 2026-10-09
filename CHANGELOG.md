@@ -18,6 +18,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Viewer screens now reuse the index's counts and most-depended-on symbols until the graph changes, so moving between screens no longer re-runs whole-table aggregates on a large repository.
 - The installed package's production dependencies no longer carry a known high-severity vulnerability.
 - CodeGraph can now integrate with Engram (persistent memory for AI agents) to enrich code exploration with project memory and automatically sync key insights after indexing. Enable with `CODEGRAPH_ENGRAM_ENABLED=1` and use `codegraph_explore_with_memory` to get code flow plus relevant project context in one call. The integration is non-blocking and gracefully degrades when Engram is unavailable.
+- Project memory is now searchable on its own through the CodeGraph server: the new `codegraph_memory_search` tool recalls past decisions and insights from Engram, so agents no longer need a second MCP server for memory.
+- The automatic post-index insight sync runs faster on large repos by scoring a candidate pool instead of walking the whole graph.
 
 ### Fixes
 
