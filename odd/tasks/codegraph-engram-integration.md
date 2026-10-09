@@ -82,11 +82,12 @@ CodeGraph (TypeScript/Node)          Engram (Go/SQLite)
 ## Evidence
 
 - Baseline benchmarks: docs/benchmarks/engram-integration-baseline.json
-  - Avg latency: 2437ms, Total chars: 124K
+  - Avg latency: 2470ms (first run 2437ms), Total chars: 124K
 - Post-implementation benchmarks: docs/benchmarks/engram-integration-post-implementation.json
-  - Normal explore avg: 2315ms
-  - With memory avg: 2395ms
-  - Overhead: 80ms (3.5%)
+  - Normal explore avg: 2115ms
+  - With memory avg: 2255ms
+  - Overhead: 140ms (6.6%, first run 80ms/3.5%) — single-digit %; absolutes vary ~15% run-to-run
+- Hook cost measured directly on the full repo graph: 8.6s for 30 insights (8.4s extract + 0.2s sync), non-blocking
 - Integration test: 10 insights extracted, 9 created + 1 updated, dedup works (0 created, 10 updated on re-sync)
 - Docs: docs/integrations/engram.md
 - CHANGELOG: Entry under [Unreleased] > New Features

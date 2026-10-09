@@ -1,50 +1,50 @@
 {
-  "timestamp": "2026-10-09T21:11:17.358Z",
+  "timestamp": "2026-10-09T23:28:10.337Z",
   "repo": "codegraph",
-  "commit": "b635dd4",
+  "commit": "32bd49c",
   "branch": "feature/codegraph-engram-integration",
   "node_version": "v24.21.0",
   "platform": "win32",
   "baseline": {
-    "avg_elapsed_ms": 2437,
-    "total_chars": 123995
+    "avg_elapsed_ms": 2470,
+    "total_chars": 123913
   },
   "normal_explore": {
     "results": [
       {
         "name": "single-symbol",
         "query": "CodeGraph.indexAll",
-        "elapsed_ms": 2399,
-        "chars": 23668,
-        "symbols_found": 50,
-        "files_found": 4,
+        "elapsed_ms": 2217,
+        "chars": 24941,
+        "symbols_found": 85,
+        "files_found": 5,
         "has_memory": false,
         "success": true
       },
       {
         "name": "flow-explore",
         "query": "CodeGraph sync indexAll",
-        "elapsed_ms": 2438,
-        "chars": 24972,
-        "symbols_found": 62,
-        "files_found": 6,
+        "elapsed_ms": 2185,
+        "chars": 24855,
+        "symbols_found": 87,
+        "files_found": 7,
         "has_memory": false,
         "success": true
       },
       {
         "name": "multi-symbol",
         "query": "ExtractionOrchestrator parseFile resolveReferences",
-        "elapsed_ms": 2443,
-        "chars": 24968,
-        "symbols_found": 100,
-        "files_found": 5,
+        "elapsed_ms": 2528,
+        "chars": 24961,
+        "symbols_found": 121,
+        "files_found": 6,
         "has_memory": false,
         "success": true
       },
       {
         "name": "callers",
         "query": "ReferenceResolver",
-        "elapsed_ms": 2189,
+        "elapsed_ms": 1966,
         "chars": 24987,
         "symbols_found": 96,
         "files_found": 5,
@@ -54,53 +54,53 @@
       {
         "name": "impact",
         "query": "GraphTraverser",
-        "elapsed_ms": 2107,
-        "chars": 23431,
-        "symbols_found": 27,
+        "elapsed_ms": 1677,
+        "chars": 24169,
+        "symbols_found": 51,
         "files_found": 2,
         "has_memory": false,
         "success": true
       }
     ],
-    "avg_elapsed_ms": 2315,
-    "total_chars": 122026
+    "avg_elapsed_ms": 2115,
+    "total_chars": 123913
   },
   "explore_with_memory": {
     "results": [
       {
         "name": "single-symbol",
         "query": "CodeGraph.indexAll",
-        "elapsed_ms": 2485,
-        "chars": 23668,
-        "symbols_found": 50,
-        "files_found": 4,
+        "elapsed_ms": 2180,
+        "chars": 24941,
+        "symbols_found": 85,
+        "files_found": 5,
         "has_memory": true,
         "success": true
       },
       {
         "name": "flow-explore",
         "query": "CodeGraph sync indexAll",
-        "elapsed_ms": 2412,
-        "chars": 24972,
-        "symbols_found": 62,
-        "files_found": 6,
+        "elapsed_ms": 2411,
+        "chars": 24855,
+        "symbols_found": 87,
+        "files_found": 7,
         "has_memory": true,
         "success": true
       },
       {
         "name": "multi-symbol",
         "query": "ExtractionOrchestrator parseFile resolveReferences",
-        "elapsed_ms": 2606,
-        "chars": 24968,
-        "symbols_found": 100,
-        "files_found": 5,
+        "elapsed_ms": 2489,
+        "chars": 24961,
+        "symbols_found": 121,
+        "files_found": 6,
         "has_memory": true,
         "success": true
       },
       {
         "name": "callers",
         "query": "ReferenceResolver",
-        "elapsed_ms": 2271,
+        "elapsed_ms": 2304,
         "chars": 24987,
         "symbols_found": 96,
         "files_found": 5,
@@ -110,19 +110,19 @@
       {
         "name": "impact",
         "query": "GraphTraverser",
-        "elapsed_ms": 2202,
-        "chars": 23431,
-        "symbols_found": 27,
+        "elapsed_ms": 1891,
+        "chars": 24169,
+        "symbols_found": 51,
         "files_found": 2,
         "has_memory": true,
         "success": true
       }
     ],
-    "avg_elapsed_ms": 2395,
-    "total_chars": 122026
+    "avg_elapsed_ms": 2255,
+    "total_chars": 123913
   },
   "overhead": {
-    "ms": 80,
-    "percent": 3.5
+    "ms": 140,
+    "percent": 6.6
   }
 }

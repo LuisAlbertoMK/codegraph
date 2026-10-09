@@ -109,14 +109,14 @@ Re-indexing updates existing observations instead of duplicating them.
 
 ### Baseline (without Engram)
 
-- Average explore latency: 2437ms
+- Average explore latency: 2470ms (first run: 2437ms — absolutes vary ~15% run-to-run)
 - Total output: 124K chars
 
 ### With Engram Integration
 
-- Average explore latency: 2395ms
-- Memory enrichment overhead: 80ms (3.5%)
-- Insight sync: ~2s for 10 insights (non-blocking)
+- Average explore latency: 2255ms (normal explore in the same run: 2115ms)
+- Memory enrichment overhead: 140ms (6.6%) — single-digit %; first run: 80ms (3.5%)
+- Insight sync: ~8.6s for 30 insights on a 10k-file repo (8.4s extract + 0.2s sync), non-blocking fire-and-forget
 
 See `docs/benchmarks/engram-integration-baseline.json` and `docs/benchmarks/engram-integration-post-implementation.json` for full results.
 

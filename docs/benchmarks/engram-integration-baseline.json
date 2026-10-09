@@ -1,7 +1,7 @@
 {
-  "timestamp": "2026-10-09T20:55:38.097Z",
+  "timestamp": "2026-10-09T23:26:56.974Z",
   "repo": "codegraph",
-  "commit": "b635dd4",
+  "commit": "32bd49c",
   "branch": "feature/codegraph-engram-integration",
   "node_version": "v24.21.0",
   "platform": "win32",
@@ -9,28 +9,28 @@
     {
       "name": "single-symbol",
       "query": "CodeGraph.indexAll",
-      "median_elapsed_ms": 2207,
-      "median_chars": 24949,
-      "median_symbols": 83,
+      "median_elapsed_ms": 2253,
+      "median_chars": 24941,
+      "median_symbols": 85,
       "runs": [
         {
-          "elapsed_ms": 2364,
-          "chars": 24949,
-          "symbols_found": 83,
+          "elapsed_ms": 2253,
+          "chars": 24941,
+          "symbols_found": 85,
           "files_found": 5,
           "success": true
         },
         {
-          "elapsed_ms": 2181,
-          "chars": 24949,
-          "symbols_found": 83,
+          "elapsed_ms": 2248,
+          "chars": 24941,
+          "symbols_found": 85,
           "files_found": 5,
           "success": true
         },
         {
-          "elapsed_ms": 2207,
-          "chars": 24949,
-          "symbols_found": 83,
+          "elapsed_ms": 2287,
+          "chars": 24941,
+          "symbols_found": 85,
           "files_found": 5,
           "success": true
         }
@@ -39,28 +39,28 @@
     {
       "name": "flow-explore",
       "query": "CodeGraph sync indexAll",
-      "median_elapsed_ms": 2310,
-      "median_chars": 24960,
-      "median_symbols": 95,
+      "median_elapsed_ms": 2381,
+      "median_chars": 24855,
+      "median_symbols": 87,
       "runs": [
         {
-          "elapsed_ms": 2310,
-          "chars": 24960,
-          "symbols_found": 95,
+          "elapsed_ms": 2472,
+          "chars": 24855,
+          "symbols_found": 87,
           "files_found": 7,
           "success": true
         },
         {
-          "elapsed_ms": 2223,
-          "chars": 24960,
-          "symbols_found": 95,
+          "elapsed_ms": 2364,
+          "chars": 24855,
+          "symbols_found": 87,
           "files_found": 7,
           "success": true
         },
         {
-          "elapsed_ms": 2712,
-          "chars": 24960,
-          "symbols_found": 95,
+          "elapsed_ms": 2381,
+          "chars": 24855,
+          "symbols_found": 87,
           "files_found": 7,
           "success": true
         }
@@ -69,27 +69,27 @@
     {
       "name": "multi-symbol",
       "query": "ExtractionOrchestrator parseFile resolveReferences",
-      "median_elapsed_ms": 3025,
-      "median_chars": 24996,
+      "median_elapsed_ms": 2860,
+      "median_chars": 24961,
       "median_symbols": 121,
       "runs": [
         {
-          "elapsed_ms": 3184,
-          "chars": 24996,
+          "elapsed_ms": 2528,
+          "chars": 24961,
           "symbols_found": 121,
           "files_found": 6,
           "success": true
         },
         {
-          "elapsed_ms": 3025,
-          "chars": 24996,
+          "elapsed_ms": 2860,
+          "chars": 24961,
           "symbols_found": 121,
           "files_found": 6,
           "success": true
         },
         {
-          "elapsed_ms": 2470,
-          "chars": 24996,
+          "elapsed_ms": 3118,
+          "chars": 24961,
           "symbols_found": 121,
           "files_found": 6,
           "success": true
@@ -99,26 +99,26 @@
     {
       "name": "callers",
       "query": "ReferenceResolver",
-      "median_elapsed_ms": 2560,
+      "median_elapsed_ms": 2423,
       "median_chars": 24987,
       "median_symbols": 96,
       "runs": [
         {
-          "elapsed_ms": 2146,
+          "elapsed_ms": 2449,
           "chars": 24987,
           "symbols_found": 96,
           "files_found": 5,
           "success": true
         },
         {
-          "elapsed_ms": 2908,
+          "elapsed_ms": 2237,
           "chars": 24987,
           "symbols_found": 96,
           "files_found": 5,
           "success": true
         },
         {
-          "elapsed_ms": 2560,
+          "elapsed_ms": 2423,
           "chars": 24987,
           "symbols_found": 96,
           "files_found": 5,
@@ -129,27 +129,27 @@
     {
       "name": "impact",
       "query": "GraphTraverser",
-      "median_elapsed_ms": 2082,
-      "median_chars": 24103,
+      "median_elapsed_ms": 2434,
+      "median_chars": 24169,
       "median_symbols": 51,
       "runs": [
         {
-          "elapsed_ms": 2082,
-          "chars": 24103,
+          "elapsed_ms": 2434,
+          "chars": 24169,
           "symbols_found": 51,
           "files_found": 2,
           "success": true
         },
         {
-          "elapsed_ms": 2019,
-          "chars": 24103,
+          "elapsed_ms": 2434,
+          "chars": 24169,
           "symbols_found": 51,
           "files_found": 2,
           "success": true
         },
         {
-          "elapsed_ms": 2187,
-          "chars": 24103,
+          "elapsed_ms": 2358,
+          "chars": 24169,
           "symbols_found": 51,
           "files_found": 2,
           "success": true
@@ -159,7 +159,7 @@
   ],
   "totals": {
     "total_queries": 5,
-    "avg_elapsed_ms": 2437,
-    "total_chars": 123995
+    "avg_elapsed_ms": 2470,
+    "total_chars": 123913
   }
 }
