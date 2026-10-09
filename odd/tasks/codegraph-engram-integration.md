@@ -1,0 +1,92 @@
+# CodeGraph ↔ Engram Integration
+
+## Goal
+
+Integrate CodeGraph (structural code intelligence) with Engram (persistent semantic memory) so that an AI agent can:
+1. Explore code with CodeGraph and automatically enrich results with project memory from Engram
+2. Extract key insights during indexing and persist them to Engram automatically
+3. Recall both code structure and accumulated memory in future sessions
+
+## Architecture
+
+```
+CodeGraph (TypeScript/Node)          Engram (Go/SQLite)
+┌─────────────────────────┐          ┌─────────────────────────┐
+│  index/sync             │          │  HTTP API + MCP         │
+│    ↓ post-index hook     │          │    POST /observations   │
+│  insight extractor       │──────────│    GET /search          │
+│    ↓                     │  HTTP    │                         │
+│  engram-client           │          │  Observations stored    │
+│                         │          │  with dedup keys        │
+│  MCP server              │          │                         │
+│    explore_with_memory   │          │                         │
+│    ↓                     │          │                         │
+│  Agent gets flow + memory│          │                         │
+└─────────────────────────┘          └─────────────────────────┘
+```
+
+## Non-Goals (this iteration)
+
+- Modifying Engram Go source (stub instead)
+- Cloud sync features
+- Bi-directional real-time sync
+- Replacing Engram's MCP server
+
+## Tasks
+
+### Phase 1: Foundation + Baseline
+- [ ] 1.1 Create Engram stub server (mock HTTP API matching real Engram endpoints)
+- [ ] 1.2 Create benchmark baseline: measure current codegraph explore latency + token usage
+- [ ] 1.3 Document baseline metrics in docs/benchmarks/
+
+### Phase 2: Insight Extractor
+- [ ] 2.1 Create `src/integrations/engram-sync.ts` module
+- [ ] 2.2 Implement `extractInsights(graph)` — top symbols by callers/impact
+- [ ] 2.3 Implement deduplication key generation
+- [ ] 2.4 Add unit tests for insight extraction
+
+### Phase 3: Engram HTTP Client
+- [ ] 3.1 Create `src/integrations/engram-client.ts`
+- [ ] 3.2 Implement `saveInsight()` — POST to Engram stub
+- [ ] 3.3 Implement `searchMemory()` — GET from Engram stub
+- [ ] 3.4 Add retry logic + timeout handling
+- [ ] 3.5 Add unit tests for client
+
+### Phase 4: MCP Cross-Tool
+- [ ] 4.1 Add `explore_with_memory` tool to MCP server
+- [ ] 4.2 Implement memory enrichment in explore results
+- [ ] 4.3 Add graceful degradation when Engram unavailable
+- [ ] 4.4 Add integration tests
+
+### Phase 5: Post-Index Hook
+- [ ] 5.1 Wire insight extractor into sync/index flow
+- [ ] 5.2 Make hook non-blocking (fire-and-forget)
+- [ ] 5.3 Add configuration flag: `CODEGRAM_ENGRAM_ENABLED`
+- [ ] 5.4 Add logging for sync operations
+
+### Phase 6: Benchmarks + Docs
+- [ ] 6.1 Run benchmarks: explore latency with/without memory enrichment
+- [ ] 6.2 Run benchmarks: index time with/without insight extraction
+- [ ] 6.3 Write docs/integrations/engram.md
+- [ ] 6.4 Write CHANGELOG entry
+- [ ] 6.5 Update server-instructions.ts if needed
+
+## Success Criteria
+
+- [ ] `explore_with_memory` returns flow + relevant memory in < 500ms overhead
+- [ ] Post-index sync adds < 10% to index time
+- [ ] Graceful degradation when Engram is down (explore still works)
+- [ ] All tests pass
+- [ ] Benchmark docs show measurable improvement
+
+## Evidence
+
+- Baseline benchmarks: docs/benchmarks/engram-integration-baseline.json
+  - Avg latency: 2437ms, Total chars: 124K
+- Post-implementation benchmarks: docs/benchmarks/engram-integration-post-implementation.json
+  - Normal explore avg: 2315ms
+  - With memory avg: 2395ms
+  - Overhead: 80ms (3.5%)
+- Integration test: 10 insights extracted, 9 created + 1 updated, dedup works (0 created, 10 updated on re-sync)
+- Docs: docs/integrations/engram.md
+- CHANGELOG: Entry under [Unreleased] > New Features

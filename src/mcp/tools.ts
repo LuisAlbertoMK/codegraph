@@ -1747,6 +1747,32 @@ export const tools: ToolDefinition[] = [
     _meta: { 'anthropic/alwaysLoad': true },
   },
   {
+    name: 'codegraph_explore_with_memory',
+    description: 'MEMORY-ENRICHED EXPLORE — same as codegraph_explore but automatically enriches results with relevant project memory from Engram (persistent memory). Use this when you want code flow + accumulated project context in one call. Gracefully degrades to normal explore if Engram is unavailable. Best for: understanding how code works in the context of past decisions, known patterns, and architecturalural insights.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Symbol names, file names, or short code terms to explore (same as codegraph_explore).',
+        },
+        maxFiles: {
+          type: 'number',
+          description: 'Maximum number of files to include source code from (default: 12)',
+          default: 12,
+        },
+        projectPath: projectPathProperty,
+        includeMemory: {
+          type: 'boolean',
+          description: 'Whether to enrich results with Engram memory (default: true). Set to false for raw explore.',
+          default: true,
+        },
+      },
+      required: ['query'],
+    },
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
     name: 'codegraph_status',
     description: 'Index health check: files, nodes, edges, last indexed time, and added/modified/removed counts. Skip unless debugging.',
     inputSchema: {
@@ -3009,6 +3035,7 @@ export class ToolHandler {
       case 'codegraph_callees': return await this.handleCallees(args);
       case 'codegraph_impact': return await this.handleImpact(args);
       case 'codegraph_explore': return await this.handleExplore(args);
+      case 'codegraph_explore_with_memory': return await this.handleExploreWithMemory(args);
       case 'codegraph_node': return await this.handleNode(args);
       case 'codegraph_files': return await this.handleFiles(args);
       default: return this.errorResult(`Unknown tool: ${toolName}`);
@@ -7637,6 +7664,64 @@ export class ToolHandler {
       responseBytes: finalText.length,
     };
     return result;
+  }
+
+  /**
+   * MEMORY-ENRICHED EXPLORE — same as handleExplore but enriches results
+   * with relevant project memory from Engram (persistent memory).
+   *
+   * Strategy:
+   * 1. Call normal handleExplore to get code flow
+   * 2. If includeMemory=true, search Engram for relevant context
+   * 3. Prepend memory section to explore output
+   * 4. Gracefully degrade if Engram is unavailable
+   */
+  private async handleExploreWithMemory(args: Record<string, unknown>): Promise<ToolResult> {
+    const rawQuery = this.validateString(args.query, 'query');
+    if (typeof rawQuery !== 'string') return rawQuery;
+
+    // Call normal explore first
+    const exploreResult = await this.handleExplore(args);
+
+    // Check if memory enrichment is requested
+    const includeMemory = (args.includeMemory as boolean) ?? true;
+    if (!includeMemory) return exploreResult;
+
+    // Try to get memory from Engram (non-blocking, graceful degradation)
+    try {
+      const { searchEngramMemory } = await import('../integrations/engram-sync');
+      const project = (args.projectPath as string) || undefined;
+      const memory = await searchEngramMemory(rawQuery, { limit: 3, project });
+
+      if (memory.length === 0) return exploreResult;
+
+      // Build memory section
+      const memoryLines = [
+        '',
+        '---',
+        '**Project Memory (from Engram)**',
+        '',
+        ...memory.map((m) => `- **${m.title}** (${m.type}, score: ${m.score})\n  ${m.content.split('\n').slice(0, 3).join('\n  ')}`),
+        '',
+      ];
+
+      // Prepend memory to explore output
+      const exploreText = exploreResult.content?.[0]?.text || '';
+      const enrichedText = memoryLines.join('\n') + exploreText;
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: enrichedText,
+          },
+        ],
+        isError: false,
+      };
+    } catch {
+      // Graceful degradation: return normal explore if Engram fails
+      return exploreResult;
+    }
   }
 
   /**
