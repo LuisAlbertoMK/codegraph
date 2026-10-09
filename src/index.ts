@@ -782,6 +782,12 @@ export class CodeGraph {
         // orchestrator's covers extraction alone, and the summary printed it
         // as the run's, leaving out resolution and linking (#2334).
         result.durationMs = Date.now() - startedAt;
+
+        // Post-index hook: sync insights to Engram (non-blocking, fire-and-forget)
+        if (process.env.CODEGRAPH_ENGRAM_ENABLED === '1') {
+          this.syncInsightsToEngram().catch(() => { /* never fail index over Engram */ });
+        }
+
         return result;
       } finally {
         // Restore the auto-checkpoint interval AFTER the fold-up above so the
