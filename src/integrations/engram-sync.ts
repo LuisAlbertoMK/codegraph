@@ -271,6 +271,29 @@ async function extractFlowInsights(
 // ============================================================================
 
 /**
+ * Deterministic per-project sync session id. Stable across runs so insights
+ * accumulate in one session instead of spawning a session per sync.
+ * Server-side session creation is idempotent.
+ */
+function syncSessionIdFor(project: string): string {
+  let h = 0;
+  for (const ch of `codegraph:${project}`) h = (Math.imul(h, 31) + ch.charCodeAt(0)) | 0;
+  return `ses_cg_sync_${Math.abs(h).toString(36).padStart(7, '0')}`;
+}
+
+async function ensureSyncSession(engramUrl: string, project: string): Promise<string> {
+  const sessionId = syncSessionIdFor(project);
+  try {
+    await fetchWithTimeout(`${engramUrl}/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: sessionId, project }),
+    });
+  } catch { /* best-effort; saves surface failures with counts */ }
+  return sessionId;
+}
+
+/**
  * Engram HTTP timeout (ms). A hung Engram (socket accepted, never responds)
  * must never stall the fire-and-forget post-index chain — it only delays
  * background memory, never indexing. Override with ENGRAM_TIMEOUT_MS.
@@ -299,9 +322,13 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs?:
  */
 export async function syncInsightsToEngram(
   insights: CodeGraphInsight[],
-  engramUrl: string = process.env.ENGRAM_URL || 'http://localhost:4199'
+  engramUrl: string = process.env.ENGRAM_URL || 'http://127.0.0.1:7437'
 ): Promise<{ created: number; updated: number; failed: number }> {
   const result = { created: 0, updated: 0, failed: 0 };
+  if (insights.length === 0) return result;
+
+  const project = insights[0]?.project || 'codegraph';
+  const sessionId = await ensureSyncSession(engramUrl, project);
 
   for (const insight of insights) {
     try {
@@ -309,6 +336,7 @@ export async function syncInsightsToEngram(
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          session_id: sessionId,
           title: insight.title,
           content: insight.content,
           type: insight.type,
@@ -328,13 +356,24 @@ export async function syncInsightsToEngram(
         }),
       });
 
-      if (response.ok) {
-        const data = (await response.json()) as { status: string };
-        if (data.status === 'created') result.created++;
-        else if (data.status === 'updated') result.updated++;
-      } else {
+      if (!response.ok) {
         result.failed++;
         console.error(`[engram-sync] Failed to sync insight ${insight.deduplication_key}: ${response.status}`);
+        continue;
+      }
+      const data = (await response.json()) as { id?: number | string };
+      if (data.id === undefined) {
+        result.failed++;
+        continue;
+      }
+      // Same deduplication key upserts the same id: first revision counts as
+      // created, later ones as updated.
+      try {
+        const current = (await (await fetchWithTimeout(`${engramUrl}/observations/${data.id}`)).json()) as { revision_count?: number; duplicate_count?: number };
+        if ((current.revision_count ?? 1) <= 1 && (current.duplicate_count ?? 0) === 0) result.created++;
+        else result.updated++;
+      } catch {
+        result.updated++;
       }
     } catch (err) {
       result.failed++;
@@ -346,6 +385,26 @@ export async function syncInsightsToEngram(
 }
 
 /**
+ * Small English stopword set for memory queries. Engram search is
+ * term-based (all terms must match), so natural-language queries
+ * ("how does X work") return nothing unless filler words are stripped.
+ */
+const MEMORY_STOPWORDS = new Set([
+  'how', 'what', 'when', 'where', 'why', 'which', 'who',
+  'does', 'do', 'did', 'is', 'are', 'was', 'were', 'be',
+  'the', 'a', 'an', 'to', 'of', 'in', 'on', 'for', 'with',
+  'and', 'or', 'it', 'this', 'that', 'by', 'from',
+]);
+
+function memoryQueryTerms(query: string): string {
+  const terms = query
+    .split(/[\s,().[\]]+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 3 && !MEMORY_STOPWORDS.has(t.toLowerCase()));
+  return terms.length > 0 ? terms.join(' ') : query;
+}
+
+/**
  * Search Engram memory for context relevant to a query.
  *
  * Returns matching observations that can enrich explore results.
@@ -354,20 +413,22 @@ export async function searchEngramMemory(
   query: string,
   options: { limit?: number; project?: string; engramUrl?: string } = {}
 ): Promise<Array<{ title: string; content: string; score: number; type: string }>> {
-  const { limit = 3, project, engramUrl = process.env.ENGRAM_URL || 'http://localhost:4199' } = options;
+  const { limit = 3, project, engramUrl = process.env.ENGRAM_URL || 'http://127.0.0.1:7437' } = options;
 
   try {
-    const params = new URLSearchParams({ q: query, limit: String(limit) });
+    const params = new URLSearchParams({ q: memoryQueryTerms(query), limit: String(limit) });
     if (project) params.set('project', project);
 
     const response = await fetchWithTimeout(`${engramUrl}/search?${params}`);
     if (!response.ok) return [];
 
-    const data = (await response.json()) as { results?: Array<{ title: string; content: string; score: number; type: string }> };
-    return (data.results || []).map((r) => ({
-      title: r.title,
-      content: r.content,
-      score: r.score || 0,
+    // Real API returns a bare array of observations (rank doubles as score).
+    // Rows may carry nulls (session markers, imports) — coerce, never throw.
+    const data = (await response.json()) as Array<{ title: string; content: string; rank?: number; type: string }>;
+    return (Array.isArray(data) ? data : []).map((r) => ({
+      title: String(r.title ?? 'Untitled'),
+      content: String(r.content ?? ''),
+      score: r.rank ?? 0,
       type: r.type || 'unknown',
     }));
   } catch {

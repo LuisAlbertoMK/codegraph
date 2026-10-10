@@ -179,7 +179,9 @@ export class UserController {
       const data = await res.json();
 
       // Should have at least one insight about AuthService
-      expect(data.results.length).toBeGreaterThan(0);
+      // (real API returns a bare array — rank doubles as score)
+      expect(Array.isArray(data)).toBe(true);
+      expect(data.length).toBeGreaterThan(0);
     });
   });
 
@@ -199,7 +201,8 @@ export class UserController {
       // should still work (the flag is checked in the hook, not in the method)
       const res = await fetch(`${engramUrl}/search?q=AuthService&limit=5`);
       const data = await res.json();
-      expect(data.results.length).toBeGreaterThan(0);
+      expect(Array.isArray(data)).toBe(true);
+      expect(data.length).toBeGreaterThan(0);
     });
 
     it('should sync when flag is set to 1', async () => {
@@ -210,7 +213,8 @@ export class UserController {
 
       const res = await fetch(`${engramUrl}/search?q=AuthService&limit=5`);
       const data = await res.json();
-      expect(data.results.length).toBeGreaterThan(0);
+      expect(Array.isArray(data)).toBe(true);
+      expect(data.length).toBeGreaterThan(0);
     });
   });
 
