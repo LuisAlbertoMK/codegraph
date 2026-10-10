@@ -94,6 +94,7 @@ CodeGraph (TypeScript/Node)          Engram (Go/SQLite)
   - Overhead: 140ms (6.6%, first run 80ms/3.5%) — single-digit %; absolutes vary ~15% run-to-run
 - Hook cost measured directly on the full repo graph: 8.6s for 30 insights (8.4s extract + 0.2s sync), non-blocking
 - Two-stage ranking: extraction 8.4s→6.5s (~1.3x); impact walks 2116→230. Next lever for x2+: count-only impact in the engine
+- Level-batched BFS impact (getImpactIdsBatched): parity 0/200 mismatches vs recursive on the real repo, walk microbench 3.24x; extraction end-to-end 8.4s→~2.5s (~x3, n=3 runs) with identical top-30
 - Integration test: 10 insights extracted, 9 created + 1 updated, dedup works (0 created, 10 updated on re-sync)
 - Docs: docs/integrations/engram.md
 - CHANGELOG: Entry under [Unreleased] > New Features

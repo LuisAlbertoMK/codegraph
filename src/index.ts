@@ -2334,6 +2334,14 @@ export class CodeGraph {
   }
 
   /**
+   * Impact membership as a level-synchronous BFS over batched queries.
+   * Same reachable set as {@link getImpactRadius} — ids only.
+   */
+  getImpactIdsBatched(nodeId: string, maxDepth: number = 3): Set<string> {
+    return this.traverser.getImpactIdsBatched(nodeId, maxDepth);
+  }
+
+  /**
    * Find the shortest path between two nodes
    *
    * @param fromId - Starting node ID
