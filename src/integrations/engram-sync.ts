@@ -14,7 +14,7 @@
  */
 
 import type CodeGraph from '../index';
-import type { Node, Subgraph } from '../types';
+import type { Node } from '../types';
 
 // ============================================================================
 // Types
@@ -103,27 +103,31 @@ export async function extractInsights(
   // impact walk is ~10x costlier and dominates extraction on large repos.
   // Rank by callers first, then score centrality only for a generous candidate
   // pool. Validated on a 12k-node repo: top-30-by-score sits inside
-  // top-50-by-callers (overlap probe), so IMPACT_POOL = 200 keeps 4x headroom.
+  // top-50-by-callers (overlap probe), so IMPACT_POOL = 100 keeps 2x margin.
   // The pool always covers maxInsights so a large maxInsights can't clip it.
-  const IMPACT_POOL = 200;
+  const IMPACT_POOL = 100;
   const poolSize = Math.max(IMPACT_POOL, maxInsights);
 
+  // Stage 1 is a SINGLE grouped scan (12k round trips -> 1): caller fan-in
+  // per target, identical numbers to getCallers(id, 1).length.
+  const callerCounts = graph.getCallerCounts();
   const byCallers: Array<{ node: Node; callerCount: number }> = [];
   for (const node of allNodes) {
-    const callerCount = graph.getCallers(node.id, 1).length;
+    const callerCount = callerCounts.get(node.id) ?? 0;
     if (callerCount < minCallers) continue;
     byCallers.push({ node, callerCount });
   }
   byCallers.sort((a, b) => b.callerCount - a.callerCount);
 
-  // Score centrality for the pool only (impact computed once, reused below)
-  const scored: Array<{ node: Node; impact: Subgraph; callerCount: number; impactCount: number; score: number }> = [];
+  // Score centrality for the pool only. Count-only impact: ranking needs the
+  // number, not the nodes — the full Subgraph is fetched later for the final
+  // top-N only (topImpacted names).
+  const scored: Array<{ node: Node; callerCount: number; impactCount: number; score: number }> = [];
   for (const { node, callerCount } of byCallers.slice(0, poolSize)) {
-    const impact = graph.getImpactRadius(node.id, 2);
-    const impactCount = impact.nodes?.size || 0;
+    const impactCount = graph.getImpactRadiusCount(node.id, 2);
     if (impactCount < minImpact) continue;
     const score = callerCount * Math.log(impactCount + 1);
-    scored.push({ node, impact, callerCount, impactCount, score });
+    scored.push({ node, callerCount, impactCount, score });
   }
 
   // Sort by score descending
@@ -135,9 +139,10 @@ export async function extractInsights(
   // Build insights
   const insights: CodeGraphInsight[] = [];
 
-  for (const { node, impact, callerCount, impactCount } of top) {
-    // Caller names only for the final top-N — one cheap lookup each
+  for (const { node, callerCount, impactCount } of top) {
+    // Full impact only for the final top-N (topImpacted names) — cheap
     const callers = graph.getCallers(node.id, 1);
+    const impact = graph.getImpactRadius(node.id, 2);
     const topCallers = callers
       .slice(0, 5)
       .map(c => c.node.name);
