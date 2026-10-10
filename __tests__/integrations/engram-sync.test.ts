@@ -13,6 +13,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn, ChildProcess } from 'node:child_process';
+import * as http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import CodeGraph from '../../src/index';
 import { ToolHandler } from '../../src/mcp/tools';
 import {
@@ -89,6 +91,40 @@ async function waitForEngram(url: string, maxAttempts = 10): Promise<void> {
   }
   throw new Error('Engram stub not ready');
 }
+
+function startHangingServer(): Promise<{ url: string; close: () => void }> {
+  return new Promise((resolve) => {
+    const server = http.createServer(() => { /* accept the socket, never respond */ });
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as AddressInfo).port;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        close: () => {
+          server.closeAllConnections();
+          server.close();
+        },
+      });
+    });
+  });
+}
+
+const MINIMAL_INSIGHT: CodeGraphInsight = {
+  deduplication_key: 'codegraph:test:Foo',
+  title: 'Foo',
+  content: 'Test',
+  type: 'symbol',
+  project: 'test',
+  name: 'Foo',
+  qualifiedName: 'Foo',
+  filePath: '/test.ts',
+  startLine: 1,
+  callerCount: 1,
+  impactCount: 1,
+  topCallers: [],
+  topImpacted: [],
+  confidence: 0.5,
+  topic_key: 'codegraph:test',
+};
 
 // ============================================================================
 // Test Suite
@@ -393,6 +429,20 @@ export { controller };
       // Should not throw, just count as failed
       expect(result.failed).toBe(1);
     });
+
+    it('aborts hung requests within ENGRAM_TIMEOUT_MS', async () => {
+      const hanging = await startHangingServer();
+      process.env.ENGRAM_TIMEOUT_MS = '300';
+      try {
+        const start = Date.now();
+        const result = await syncInsightsToEngram([MINIMAL_INSIGHT], hanging.url);
+        expect(Date.now() - start).toBeLessThan(8000);
+        expect(result.failed).toBe(1);
+      } finally {
+        delete process.env.ENGRAM_TIMEOUT_MS;
+        hanging.close();
+      }
+    });
   });
 
   // =========================================================================
@@ -460,6 +510,24 @@ export { controller };
       });
 
       expect(results).toEqual([]);
+    });
+
+    it('should return empty array quickly when Engram hangs', async () => {
+      const hanging = await startHangingServer();
+      process.env.ENGRAM_TIMEOUT_MS = '300';
+      try {
+        const start = Date.now();
+        const results = await searchEngramMemory('AuthService', {
+          limit: 3,
+          project: 'test-project',
+          engramUrl: hanging.url,
+        });
+        expect(Date.now() - start).toBeLessThan(8000);
+        expect(results).toEqual([]);
+      } finally {
+        delete process.env.ENGRAM_TIMEOUT_MS;
+        hanging.close();
+      }
     });
   });
 
