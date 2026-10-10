@@ -4,7 +4,7 @@ CodeGraph can integrate with [Engram](https://github.com/Gentleman-Programming/e
 
 1. **Explore code with memory context** — `codegraph_explore_with_memory` enriches code flow results with relevant project memory from Engram
 2. **Auto-sync insights** — after indexing, key symbols and flows are automatically persisted to Engram for cross-session recall
-3. **Search memory directly** — `codegraph_memory_search` recalls past decisions and insights with no code flow, so a single CodeGraph MCP server covers code + memory (no second MCP server needed)
+3. **Search memory directly** — `codegraph_memory_search` recalls past decisions and insights with no code flow, so a single CodeGraph MCP server covers code + memory (no second MCP server needed; opt in with `CODEGRAPH_MCP_TOOLS=explore,memory_search,explore_with_memory` — the default surface lists only `codegraph_explore`)
 
 ## Architecture
 
@@ -34,6 +34,7 @@ Set the environment variable before running CodeGraph:
 export CODEGRAPH_ENGRAM_ENABLED=1
 export ENGRAM_URL=http://localhost:4199  # Engram HTTP API URL
 export ENGRAM_TIMEOUT_MS=10000  # Engram HTTP timeout in ms (default: 10000)
+export CODEGRAPH_MCP_TOOLS=explore,memory_search,explore_with_memory  # expose memory tools (default: explore only)
 ```
 
 ### Disable Engram Sync
@@ -126,7 +127,7 @@ Re-indexing updates existing observations instead of duplicating them.
 
 ### Baseline (without Engram)
 
-- Average explore latency: 2470ms (first run: 2437ms — absolutes vary ~15% run-to-run)
+- Average explore latency: 2470ms (earlier local runs ranged 2248–2470ms)
 - Total output: 124K chars
 
 ### With Engram Integration

@@ -185,6 +185,19 @@ const controller = new UserController(auth, users);
 export { controller };
 `);
 
+    // Nested containers (Ruby): parity must hold through arbitrary nesting
+    fs.writeFileSync(path.join(srcDir, 'nested.rb'), `module Outer
+  module Inner
+    def self.deep_helper(x)
+      x * 2
+    end
+  end
+  def self.outer_call(x)
+    Inner.deep_helper(x)
+  end
+end
+`);
+
     // Initialize and index
     cg = await CodeGraph.init(testDir, { index: true });
 
@@ -348,6 +361,7 @@ export { controller };
         ...cg.getNodesByKind('function'),
         ...cg.getNodesByKind('method'),
         ...cg.getNodesByKind('class'),
+        ...cg.getNodesByKind('module'),
       ];
 
       expect(corpus.length).toBeGreaterThan(0);

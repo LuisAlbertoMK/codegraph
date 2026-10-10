@@ -74,7 +74,7 @@ CodeGraph (TypeScript/Node)          Engram (Go/SQLite)
 ### Phase 7: Two-Stage Ranking + Single MCP (done)
 - [x] 7.1 Two-stage insight ranking (callers first, impact only for top-200 pool, 4x headroom over overlap evidence)
 - [x] 7.2 Native `codegraph_memory_search` MCP tool (code + memory through one CodeGraph MCP server)
-- [x] 7.3 Ranking-equivalence + tool tests (32/32 green, tsc clean)
+- [x] 7.3 Ranking-equivalence + tool tests (36/36 green, tsc clean)
 
 ## Success Criteria
 
@@ -91,7 +91,7 @@ CodeGraph (TypeScript/Node)          Engram (Go/SQLite)
 - Post-implementation benchmarks: docs/benchmarks/engram-integration-post-implementation.json
   - Normal explore avg: 2115ms
   - With memory avg: 2255ms
-  - Overhead: 140ms (6.6%, first run 80ms/3.5%) — single-digit %; absolutes vary ~15% run-to-run
+  - Overhead: 140ms (6.6%; earlier local run: 80ms/3.5%) — single-digit %; absolutes vary run-to-run
 - Hook cost measured directly on the full repo graph: 8.6s for 30 insights (8.4s extract + 0.2s sync), non-blocking
 - Two-stage ranking: extraction 8.4s→6.5s (~1.3x); impact walks 2116→230. Next lever for x2+: count-only impact in the engine
 - Level-batched BFS impact (getImpactIdsBatched): parity 0/200 mismatches vs recursive on the real repo, walk microbench 3.24x; extraction end-to-end 8.4s→~2.5s (~x3, n=3 runs) with identical top-30
