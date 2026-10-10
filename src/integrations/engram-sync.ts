@@ -173,9 +173,16 @@ export async function extractInsights(
     insights.push(insight);
   }
 
-  // Optionally add flow insights for top symbols
+  // Optionally add flow insights for top symbols (nodes travel with their
+  // insights so flows bind the exact symbol, never a same-named lookalike)
   if (includeFlows && insights.length > 0) {
-    const flowInsights = await extractFlowInsights(graph, insights.slice(0, 5), project);
+    const flowInputs: Array<{ insight: CodeGraphInsight; node: Node }> = [];
+    for (let i = 0; i < Math.min(5, top.length, insights.length); i++) {
+      const insight = insights[i];
+      const entry = top[i];
+      if (insight !== undefined && entry !== undefined) flowInputs.push({ insight, node: entry.node });
+    }
+    const flowInsights = await extractFlowInsights(graph, flowInputs, project);
     insights.push(...flowInsights);
   }
 
@@ -219,17 +226,15 @@ function buildInsightContent(
  */
 async function extractFlowInsights(
   graph: CodeGraph,
-  topInsights: CodeGraphInsight[],
+  topInsights: Array<{ insight: CodeGraphInsight; node: Node }>,
   project: string
 ): Promise<CodeGraphInsight[]> {
   const flows: CodeGraphInsight[] = [];
 
-  for (const insight of topInsights) {
-    // Get callees (what this symbol calls)
-    const searchResult = graph.searchNodes(insight.name, { limit: 1 })[0];
-    if (!searchResult) continue;
-
-    const callees = graph.getCallees(searchResult.node.id, 1);
+  for (const { insight, node } of topInsights) {
+    // Callees of the exact node — never re-resolve by short name (overloads
+    // and common names would bind another symbol's callees to this insight).
+    const callees = graph.getCallees(node.id, 1);
     if (callees.length === 0) continue;
 
     const calleeNames = callees.slice(0, 5).map(c => c.node.name);
@@ -266,6 +271,27 @@ async function extractFlowInsights(
 // ============================================================================
 
 /**
+ * Engram HTTP timeout (ms). A hung Engram (socket accepted, never responds)
+ * must never stall the fire-and-forget post-index chain — it only delays
+ * background memory, never indexing. Override with ENGRAM_TIMEOUT_MS.
+ */
+function getEngramTimeoutMs(): number {
+  const raw = parseInt(process.env.ENGRAM_TIMEOUT_MS || '10000', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 10000;
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs?: number): Promise<Response> {
+  const ms = timeoutMs ?? getEngramTimeoutMs();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Sync insights to Engram via HTTP.
  *
  * Uses the Engram HTTP API (POST /observations) with deduplication.
@@ -279,7 +305,7 @@ export async function syncInsightsToEngram(
 
   for (const insight of insights) {
     try {
-      const response = await fetch(`${engramUrl}/observations`, {
+      const response = await fetchWithTimeout(`${engramUrl}/observations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -334,7 +360,7 @@ export async function searchEngramMemory(
     const params = new URLSearchParams({ q: query, limit: String(limit) });
     if (project) params.set('project', project);
 
-    const response = await fetch(`${engramUrl}/search?${params}`);
+    const response = await fetchWithTimeout(`${engramUrl}/search?${params}`);
     if (!response.ok) return [];
 
     const data = (await response.json()) as { results?: Array<{ title: string; content: string; score: number; type: string }> };

@@ -33,6 +33,7 @@ Set the environment variable before running CodeGraph:
 ```bash
 export CODEGRAPH_ENGRAM_ENABLED=1
 export ENGRAM_URL=http://localhost:4199  # Engram HTTP API URL
+export ENGRAM_TIMEOUT_MS=10000  # Engram HTTP timeout in ms (default: 10000)
 ```
 
 ### Disable Engram Sync
@@ -131,7 +132,7 @@ Re-indexing updates existing observations instead of duplicating them.
 ### With Engram Integration
 
 - Average explore latency: 2255ms (normal explore in the same run: 2115ms)
-- Memory enrichment overhead: 140ms (6.6%) — single-digit %; first run: 80ms (3.5%)
+- Memory enrichment overhead: ~35ms on the real MCP path (`benchmark-mcp-memory.mjs`); CLI-proxy measurement: 140ms (6.6%)
 - Insight sync: ~2.5s for 30 insights on a 10k-file repo (batched impact walks, non-blocking fire-and-forget)
 
 See `docs/benchmarks/engram-integration-baseline.json` and `docs/benchmarks/engram-integration-post-implementation.json` for full results.
@@ -162,6 +163,9 @@ node scripts/benchmark-baseline.mjs
 
 # Post-implementation (after changes)
 node scripts/benchmark-post-implementation.mjs
+
+# Real MCP path (in-process ToolHandler, not CLI+cURL)
+node scripts/benchmark-mcp-memory.mjs
 ```
 
 ## Implementation Details
