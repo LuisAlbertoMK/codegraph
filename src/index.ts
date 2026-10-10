@@ -2311,6 +2311,29 @@ export class CodeGraph {
   }
 
   /**
+   * Count nodes in the impact radius without materializing the Subgraph.
+   *
+   * Same walk as {@link getImpactRadius} (same gates and exclusions), returns
+   * only the reachable count. For ranking paths that never read the
+   * nodes/edges themselves.
+   *
+   * @param nodeId - ID of the node
+   * @param maxDepth - Maximum depth to traverse (default: 3)
+   * @returns Number of nodes in the impact radius (focal included)
+   */
+  getImpactRadiusCount(nodeId: string, maxDepth: number = 3): number {
+    return this.traverser.getImpactRadiusCount(nodeId, maxDepth);
+  }
+
+  /**
+   * Caller fan-in per target in one grouped scan (no per-node round trips).
+   * Identical numbers to getCallers(id, 1).length per node.
+   */
+  getCallerCounts(): Map<string, number> {
+    return this.traverser.getCallerCounts();
+  }
+
+  /**
    * Find the shortest path between two nodes
    *
    * @param fromId - Starting node ID

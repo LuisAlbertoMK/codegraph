@@ -306,6 +306,7 @@ export class QueryBuilder {
     getTopRouteFile?: SqliteStatement;
     getRoutingManifest?: SqliteStatement;
     insertNameSegment?: SqliteStatement;
+    getCallerCounts?: SqliteStatement;
   } = {};
 
   // Names whose segments were already written this session — skips re-splitting
@@ -2237,6 +2238,47 @@ export class QueryBuilder {
     }
     const rows = this.stmts.getEdgesByTarget.all(targetId) as EdgeRow[];
     return rows.map(rowToEdge);
+  }
+
+  /**
+   * Existence probe for MANY node ids in one query. Returns the subset that
+   * exists — for traversals that only need membership (counting walks),
+   * without decoding full Node rows. Chunked like the other batch forms.
+   */
+  filterExistingNodeIds(ids: readonly string[]): Set<string> {
+    const unique = [...new Set(ids)];
+    const out = new Set<string>();
+    for (let i = 0; i < unique.length; i += SQLITE_PARAM_CHUNK_SIZE) {
+      const chunk = unique.slice(i, i + SQLITE_PARAM_CHUNK_SIZE);
+      const rows = this.db.prepare(
+        `SELECT id FROM nodes WHERE id IN (${chunk.map(() => '?').join(',')})`
+      ).all(...chunk) as Array<{ id: string }>;
+      for (const row of rows) out.add(row.id);
+    }
+    return out;
+  }
+
+  /**
+   * Caller fan-in per target in ONE grouped scan (no per-node round trips).
+   *
+   * Counts DISTINCT sources over the same edge kinds getCallers(depth 1)
+   * walks (calls, references, imports, instantiates, navigates) — identical
+   * numbers to calling getCallers(id, 1).length per node. Targets with no
+   * such edges are absent (treat as 0).
+   */
+  getCallerCounts(): Map<string, number> {
+    if (!this.stmts.getCallerCounts) {
+      this.stmts.getCallerCounts = this.db.prepare(
+        `SELECT target AS id, COUNT(DISTINCT source) AS n FROM edges
+         WHERE kind IN ('calls','references','imports','instantiates','navigates')
+         GROUP BY target`
+      );
+    }
+    const out = new Map<string, number>();
+    for (const row of this.stmts.getCallerCounts.all() as Array<{ id: string; n: number }>) {
+      out.set(row.id, row.n);
+    }
+    return out;
   }
 
   /**
