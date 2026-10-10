@@ -610,25 +610,39 @@ export class GraphTraverser {
     const containerKinds = new Set(['class', 'interface', 'struct', 'union', 'trait', 'protocol', 'module', 'enum']);
     const seen = new Set<string>([nodeId]);
     const depthOf = new Map<string, number>([[nodeId, 0]]);
+    // Kind cache across levels: each node row is fetched once.
+    const kindCache = new Map<string, Node>();
+    const kindOf = (ids: string[]): void => {
+      const fresh = ids.filter((id) => !kindCache.has(id));
+      if (fresh.length === 0) return;
+      for (const [id, n] of this.queries.getNodesByIds(fresh)) kindCache.set(id, n);
+    };
     let frontier = [nodeId];
     let depth = 0;
     while (frontier.length > 0 && depth < maxDepth) {
-      // Same-depth container cascade (mirrors same-depth recursion):
-      // children join this level, their dependents count at depth + 1.
-      const levelNodes = this.queries.getNodesByIds(frontier);
-      const containers = frontier.filter((id) => {
-        const n = levelNodes.get(id);
-        return n !== undefined && containerKinds.has(n.kind);
-      });
-      if (containers.length > 0) {
+      // Same-depth container cascade to FIXPOINT (mirrors unbounded same-depth
+      // recursion): children join this level and nested containers cascade
+      // further; their dependents all count at depth + 1. Single-pass only
+      // reaches one nesting level (#nested-container parity).
+      kindOf(frontier);
+      let pending = [...frontier];
+      for (;;) {
+        const containers = pending.filter((id) => {
+          const n = kindCache.get(id);
+          return n !== undefined && containerKinds.has(n.kind);
+        });
+        if (containers.length === 0) break;
         const containsEdges = this.queries.getOutgoingEdgesFrom(containers, ['contains']);
+        pending = [];
         for (const e of containsEdges) {
           if (!depthOf.has(e.target)) {
             depthOf.set(e.target, depth);
             seen.add(e.target);
             frontier.push(e.target);
+            pending.push(e.target);
           }
         }
+        kindOf(pending);
       }
       // Dependents of the whole level in one batch (minus `contains`, #536).
       const incoming = this.queries.getIncomingEdgesTo(frontier).filter((e) => e.kind !== 'contains');
