@@ -96,6 +96,7 @@ CodeGraph (TypeScript/Node)          Engram (Go/SQLite)
 - Two-stage ranking: extraction 8.4s→6.5s (~1.3x); impact walks 2116→230. Next lever for x2+: count-only impact in the engine
 - Level-batched BFS impact (getImpactIdsBatched): parity 0/200 mismatches vs recursive on the real repo, walk microbench 3.24x; extraction end-to-end 8.4s→~2.5s (~x3, n=3 runs) with identical top-30
 - Gaps closed: ENGRAM_TIMEOUT_MS abort (hung Engram can't stall the hook, tested with hanging server), flow insights bind exact node ids (no short-name re-resolve), honest MCP-path benchmark `benchmark-mcp-memory.mjs` (~35ms enrichment overhead)
+- Real-Engram retarget: client rewritten to the actual v3 API (idempotent per-project sync sessions, dedup upsert, rank-as-score, stopword-stripped queries); stub mirrors it; project opencode session runs local dist MCP against 127.0.0.1:7437. Real-use proof: natural query enriches with the relevant session memory; code insights visible via mem_search (one store).
 - Integration test: 10 insights extracted, 9 created + 1 updated, dedup works (0 created, 10 updated on re-sync)
 - Docs: docs/integrations/engram.md
 - CHANGELOG: Entry under [Unreleased] > New Features

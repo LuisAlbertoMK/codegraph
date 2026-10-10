@@ -32,7 +32,7 @@ Set the environment variable before running CodeGraph:
 
 ```bash
 export CODEGRAPH_ENGRAM_ENABLED=1
-export ENGRAM_URL=http://localhost:4199  # Engram HTTP API URL
+export ENGRAM_URL=http://127.0.0.1:7437  # Engram HTTP API URL (engram serve default port)
 export ENGRAM_TIMEOUT_MS=10000  # Engram HTTP timeout in ms (default: 10000)
 export CODEGRAPH_MCP_TOOLS=explore,memory_search,explore_with_memory  # expose memory tools (default: explore only)
 ```

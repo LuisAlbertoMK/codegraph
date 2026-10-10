@@ -1767,6 +1767,10 @@ export const tools: ToolDefinition[] = [
           description: 'Whether to enrich results with Engram memory (default: true). Set to false for raw explore.',
           default: true,
         },
+        project: {
+          type: 'string',
+          description: 'Engram project name (exact match). Defaults to the indexed project name when projectPath is given.',
+        },
       },
       required: ['query'],
     },
@@ -7693,6 +7697,19 @@ export class ToolHandler {
   }
 
   /**
+   * Resolve the Engram project filter for memory tools: explicit `project`
+   * wins (exact Engram project name); otherwise derive it from `projectPath`
+   * the same way the post-index hook does (directory basename) — never pass
+   * a raw filesystem path as the filter, which matches nothing.
+   */
+  private resolveEngramProject(args: Record<string, unknown>): string | undefined {
+    const explicit = args.project as string | undefined;
+    if (explicit) return explicit;
+    const projectPath = args.projectPath as string | undefined;
+    return projectPath ? projectPath.split(/[\\/]/).filter(Boolean).pop() : undefined;
+  }
+
+  /**
    * MEMORY-ENRICHED EXPLORE — same as handleExplore but enriches results
    * with relevant project memory from Engram (persistent memory).
    *
@@ -7716,7 +7733,7 @@ export class ToolHandler {
     // Try to get memory from Engram (non-blocking, graceful degradation)
     try {
       const { searchEngramMemory } = await import('../integrations/engram-sync');
-      const project = (args.projectPath as string) || undefined;
+      const project = this.resolveEngramProject(args);
       const memory = await searchEngramMemory(rawQuery, { limit: 3, project });
 
       if (memory.length === 0) return exploreResult;
@@ -7768,9 +7785,7 @@ export class ToolHandler {
       ? Math.min(Math.floor(args.limit), 50)
       : 5;
 
-    const projectPath = args.projectPath as string | undefined;
-    const project = (args.project as string | undefined)
-      || (projectPath ? projectPath.split(/[\\/]/).filter(Boolean).pop() : undefined);
+    const project = this.resolveEngramProject(args);
 
     try {
       const { searchEngramMemory } = await import('../integrations/engram-sync');

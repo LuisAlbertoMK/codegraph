@@ -5,7 +5,7 @@
  * measures the REAL MCP tool path through ToolHandler against the live index.
  *
  * Requires: built dist/, indexed repo, Engram on :4199 (stub or real).
- * Run: ENGRAM_URL=http://localhost:4199 node scripts/benchmark-mcp-memory.mjs
+ * Run: ENGRAM_URL=http://127.0.0.1:7437 node scripts/benchmark-mcp-memory.mjs
  *
  * Output: docs/benchmarks/engram-integration-mcp-memory.json
  */
@@ -19,6 +19,8 @@ import { ToolHandler } from '../dist/mcp/tools.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, '..');
+// Realistic agent usage: projectPath set, so memory is project-filtered
+const PROJECT_PATH = process.env.CODEGRAPH_BENCH_PROJECT || repoRoot;
 
 const QUERIES = [
   { name: 'single-symbol', query: 'CodeGraph.indexAll' },
@@ -47,11 +49,11 @@ async function main() {
     const plain = [], enriched = [];
     for (let i = 0; i < REPS; i++) {
       let t = Date.now();
-      const r1 = await handler.execute('codegraph_explore', { query });
+      const r1 = await handler.execute('codegraph_explore', { query, projectPath: PROJECT_PATH });
       plain.push({ ms: Date.now() - t, chars: textOf(r1).length });
 
       t = Date.now();
-      const r2 = await handler.execute('codegraph_explore_with_memory', { query });
+      const r2 = await handler.execute('codegraph_explore_with_memory', { query, projectPath: PROJECT_PATH });
       const text = textOf(r2);
       enriched.push({ ms: Date.now() - t, chars: text.length, hasMemory: text.includes('Project Memory') });
     }

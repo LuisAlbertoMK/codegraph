@@ -1,42 +1,42 @@
 {
-  "timestamp": "2026-10-10T00:25:22.429Z",
+  "timestamp": "2026-10-10T01:24:42.444Z",
   "repo": "codegraph",
-  "commit": "76c5d95",
+  "commit": "803bdd0",
   "node_version": "v24.21.0",
   "platform": "win32",
   "results": [
     {
       "name": "single-symbol",
       "query": "CodeGraph.indexAll",
-      "plain_ms": 613,
-      "memory_ms": 764,
+      "plain_ms": 672,
+      "memory_ms": 346,
       "plain_chars": 24947,
       "memory_chars": 24947,
       "has_memory": false,
-      "overhead_ms": 151
+      "overhead_ms": -326
     },
     {
       "name": "flow-explore",
       "query": "CodeGraph sync indexAll",
-      "plain_ms": 478,
-      "memory_ms": 473,
+      "plain_ms": 358,
+      "memory_ms": 359,
       "plain_chars": 24775,
-      "memory_chars": 25676,
+      "memory_chars": 26771,
       "has_memory": true,
-      "overhead_ms": -5
+      "overhead_ms": 1
     },
     {
       "name": "multi-symbol",
       "query": "ExtractionOrchestrator parseFile resolveReferences",
-      "plain_ms": 573,
-      "memory_ms": 532,
+      "plain_ms": 387,
+      "memory_ms": 393,
       "plain_chars": 24912,
       "memory_chars": 24912,
       "has_memory": false,
-      "overhead_ms": -41
+      "overhead_ms": 6
     }
   ],
-  "avg_plain_ms": 555,
-  "avg_memory_ms": 590,
-  "avg_overhead_ms": 35
+  "avg_plain_ms": 472,
+  "avg_memory_ms": 366,
+  "avg_overhead_ms": -106
 }

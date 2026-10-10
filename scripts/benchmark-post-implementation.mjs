@@ -100,7 +100,7 @@ function main() {
       // Add Engram search overhead (simulated by the searchEngramMemory call)
       const engramStart = Date.now();
       try {
-        execSync(`curl -s "http://localhost:4199/search?q=${encodeURIComponent(query)}&limit=3"`, { timeout: 5000 });
+        execSync(`curl -s "http://127.0.0.1:7437/search?q=${encodeURIComponent(query)}&limit=3"`, { timeout: 5000 });
       } catch {}
       const engramElapsed = Date.now() - engramStart;
       m.elapsed_ms += engramElapsed;

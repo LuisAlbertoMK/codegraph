@@ -526,8 +526,26 @@ end
       expect(results).toEqual([]);
     });
 
-    it('should return empty array quickly when Engram hangs', async () => {
-      const hanging = await startHangingServer();
+    it('should strip stopwords from natural-language queries', async () => {
+      const insights = await extractInsights(cg, {
+        maxInsights: 5,
+        minCallers: 1,
+        minImpact: 1,
+        project: 'test-project',
+      });
+      await syncInsightsToEngram(insights, engramUrl);
+
+      const results = await searchEngramMemory('how does AuthService work', {
+        limit: 3,
+        project: 'test-project',
+        engramUrl,
+      });
+
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0].title).toContain('AuthService');
+    });
+
+    it('should return empty array quickly when Engram hangs', async () => {      const hanging = await startHangingServer();
       process.env.ENGRAM_TIMEOUT_MS = '300';
       try {
         const start = Date.now();

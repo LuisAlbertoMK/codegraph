@@ -13,7 +13,7 @@
 import { CodeGraph } from '../dist/index.js';
 import { extractInsights, syncInsightsToEngram, searchEngramMemory } from '../dist/integrations/engram-sync.js';
 
-const ENGRAM_URL = process.env.ENGRAM_URL || 'http://localhost:4199';
+const ENGRAM_URL = process.env.ENGRAM_URL || 'http://127.0.0.1:7437';
 
 async function main() {
   console.log('[test] Opening CodeGraph for D:/codegraph...');
