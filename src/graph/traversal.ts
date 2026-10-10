@@ -591,6 +591,61 @@ export class GraphTraverser {
     return counted.size;
   }
 
+  /**
+   * Impact membership as a level-synchronous BFS over batched queries.
+   *
+   * Same reachable set as {@link getImpactRadius} — same depth gates, same
+   * container expansion, same `contains` exclusion (#536) — but a whole
+   * frontier level costs a constant handful of round trips (one incoming-edge
+   * batch, one node batch, one contains batch) instead of one query per node,
+   * so god-symbols stop being quadratic. Returns member ids only; pair with a
+   * tiny node fetch for names.
+   *
+   * First discovery is always at minimal depth (levels drain in order), which
+   * reproduces the nearer-before re-expansion outcomes for membership.
+   */
+  getImpactIdsBatched(nodeId: string, maxDepth: number = 3): Set<string> {
+    const focal = this.queries.getNodeById(nodeId);
+    if (!focal) return new Set();
+    const containerKinds = new Set(['class', 'interface', 'struct', 'union', 'trait', 'protocol', 'module', 'enum']);
+    const seen = new Set<string>([nodeId]);
+    const depthOf = new Map<string, number>([[nodeId, 0]]);
+    let frontier = [nodeId];
+    let depth = 0;
+    while (frontier.length > 0 && depth < maxDepth) {
+      // Same-depth container cascade (mirrors same-depth recursion):
+      // children join this level, their dependents count at depth + 1.
+      const levelNodes = this.queries.getNodesByIds(frontier);
+      const containers = frontier.filter((id) => {
+        const n = levelNodes.get(id);
+        return n !== undefined && containerKinds.has(n.kind);
+      });
+      if (containers.length > 0) {
+        const containsEdges = this.queries.getOutgoingEdgesFrom(containers, ['contains']);
+        for (const e of containsEdges) {
+          if (!depthOf.has(e.target)) {
+            depthOf.set(e.target, depth);
+            seen.add(e.target);
+            frontier.push(e.target);
+          }
+        }
+      }
+      // Dependents of the whole level in one batch (minus `contains`, #536).
+      const incoming = this.queries.getIncomingEdgesTo(frontier).filter((e) => e.kind !== 'contains');
+      const next: string[] = [];
+      for (const e of incoming) {
+        if (!depthOf.has(e.source)) {
+          depthOf.set(e.source, depth + 1);
+          seen.add(e.source);
+          next.push(e.source);
+        }
+      }
+      frontier = next;
+      depth++;
+    }
+    return seen;
+  }
+
   private getImpactCountRecursive(
     nodeId: string,
     maxDepth: number,

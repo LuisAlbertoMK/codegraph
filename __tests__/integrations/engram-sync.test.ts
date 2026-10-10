@@ -292,6 +292,35 @@ export { controller };
 
       expect(insights.map((i) => i.qualifiedName)).toEqual(expected);
     });
+
+    it('impact count matches materialized impact size', async () => {
+      const corpus = [
+        ...cg.getNodesByKind('function'),
+        ...cg.getNodesByKind('method'),
+      ].slice(0, 20);
+
+      expect(corpus.length).toBeGreaterThan(0);
+      for (const node of corpus) {
+        expect(cg.getImpactRadiusCount(node.id, 2)).toBe(
+          cg.getImpactRadius(node.id, 2).nodes.size
+        );
+      }
+    });
+
+    it('batched impact ids match the recursive walk', async () => {
+      const corpus = [
+        ...cg.getNodesByKind('function'),
+        ...cg.getNodesByKind('method'),
+        ...cg.getNodesByKind('class'),
+      ];
+
+      expect(corpus.length).toBeGreaterThan(0);
+      for (const node of corpus) {
+        const recursive = [...cg.getImpactRadius(node.id, 2).nodes.keys()].sort();
+        const batched = [...cg.getImpactIdsBatched(node.id, 2)].sort();
+        expect(batched).toEqual(recursive);
+      }
+    });
   });
 
   // =========================================================================
