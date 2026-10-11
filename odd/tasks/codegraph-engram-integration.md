@@ -100,6 +100,7 @@ CodeGraph (TypeScript/Node)          Engram (Go/SQLite)
 - Autonomous battery vs real backend: extraction 2.1–2.9s (n=3); sync POST+GET-revision ×30 ≈ 2.1s (sequential; parallelizing is the next lever, est. ~0.2s); MCP-path enrichment overhead ≈ 0ms (1/−26/−2, hasMemory 2/3); CLI-proxy post number currently load-contaminated (baseline itself swung 2115→3264 across runs) — mcp-memory is the honest benchmark.
 - Parallel sync (8 lanes) measured: NO wall gain vs Engram v3.3.0 (8 seq 385ms vs 8 par 298ms — server serializes writes at ~40–48ms each). Kept anyway: correct, tested, faster vs parallel-capable servers. True next lever is fewer calls (local synced-keys state → skip GETs; or incremental sync).
 - Synced-keys state (`.codegraph/engram-sync-state.json`): steady-state sync skips 30 revision GETs → sync ~2.1s→~1.6s (~25%); POSTs remain the floor (30 serialized server writes). 38/38 tests.
+- Incremental sync (content-hash v2 state): steady-state sync posts NOTHING — 5ms, 0/0/0. Determinism fixed en route (identity tie-breaks + file-qualified dedup keys; two `Node` defs no longer flip-flop or clobber each other).
 - Integration test: 10 insights extracted, 9 created + 1 updated, dedup works (0 created, 10 updated on re-sync)
 - Docs: docs/integrations/engram.md
 - CHANGELOG: Entry under [Unreleased] > New Features
