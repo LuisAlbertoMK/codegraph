@@ -457,6 +457,32 @@ end
         hanging.close();
       }
     });
+
+    it('skips revision lookups for keys in local state', async () => {
+      const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-engram-state-'));
+      try {
+        const insights = await extractInsights(cg, {
+          maxInsights: 5,
+          minCallers: 1,
+          minImpact: 1,
+          project: 'state-test',
+        });
+        expect(insights.length).toBeGreaterThan(0);
+
+        const first = await syncInsightsToEngram(insights, engramUrl, { rootDir: stateRoot });
+        expect(first.created + first.updated).toBe(insights.length);
+
+        const stateFile = path.join(stateRoot, '.codegraph', 'engram-sync-state.json');
+        expect(fs.existsSync(stateFile)).toBe(true);
+
+        const second = await syncInsightsToEngram(insights, engramUrl, { rootDir: stateRoot });
+        expect(second.failed).toBe(0);
+        expect(second.updated).toBe(insights.length);
+        expect(second.created).toBe(0);
+      } finally {
+        fs.rmSync(stateRoot, { recursive: true, force: true });
+      }
+    });
   });
 
   // =========================================================================

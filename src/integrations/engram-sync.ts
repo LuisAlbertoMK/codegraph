@@ -15,6 +15,8 @@
 
 import type CodeGraph from '../index';
 import type { Node } from '../types';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // ============================================================================
 // Types
@@ -347,7 +349,8 @@ async function mapWithConcurrency<T, R>(
  */
 export async function syncInsightsToEngram(
   insights: CodeGraphInsight[],
-  engramUrl: string = process.env.ENGRAM_URL || 'http://127.0.0.1:7437'
+  engramUrl: string = process.env.ENGRAM_URL || 'http://127.0.0.1:7437',
+  options: { rootDir?: string } = {}
 ): Promise<{ created: number; updated: number; failed: number }> {
   const result = { created: 0, updated: 0, failed: 0 };
   if (insights.length === 0) return result;
@@ -355,9 +358,15 @@ export async function syncInsightsToEngram(
   const project = insights[0]?.project || 'codegraph';
   const sessionId = await ensureSyncSession(engramUrl, project);
 
+  // Previously synced keys skip the revision lookup (one saved round trip
+  // each). Counts for them are best-effort "updated": if the store was wiped
+  // meanwhile, the upsert still restores the insight and the tally self-heals
+  // on the next full check. State lives in .codegraph/ (gitignored, per-project).
+  const runtimeSeen = loadSyncedIds(options.rootDir);
+
   type Posted =
     | { ok: false }
-    | { ok: true; id: number | string; key: string | null };
+    | { ok: true; id: number | string; key: string };
 
   const posted = await mapWithConcurrency(insights, SYNC_CONCURRENCY, async (insight): Promise<Posted> => {
     try {
@@ -399,24 +408,69 @@ export async function syncInsightsToEngram(
   });
 
   // Same deduplication key upserts the same id: first revision counts as
-  // created, later ones as updated.
-  const revisions = await mapWithConcurrency(posted, SYNC_CONCURRENCY, async (p) => {
-    if (!p.ok) return p;
+  // created, later ones as updated. Keys already in state skip the lookup.
+  const checkIdx: number[] = [];
+  let updatedFromState = 0;
+  posted.forEach((p, i) => {
+    if (!p.ok) return;
+    if (runtimeSeen.has(p.key)) updatedFromState++;
+    else checkIdx.push(i);
+  });
+
+  const checked = await mapWithConcurrency(checkIdx, SYNC_CONCURRENCY, async (i) => {
+    const p = posted[i];
+    if (!p || !p.ok) return { created: false, key: null as string | null, id: null as number | string | null };
     try {
       const current = (await (await fetchWithTimeout(`${engramUrl}/observations/${p.id}`)).json()) as { revision_count?: number; duplicate_count?: number };
-      return { ...p, created: (current.revision_count ?? 1) <= 1 && (current.duplicate_count ?? 0) === 0 };
+      const created = (current.revision_count ?? 1) <= 1 && (current.duplicate_count ?? 0) === 0;
+      return { created, key: p.key as string, id: p.id as number | string };
     } catch {
-      return { ...p, created: false };
+      return { created: false, key: p.key as string, id: p.id as number | string };
     }
   });
 
-  for (const r of revisions) {
-    if (!r.ok) result.failed++;
-    else if (r.created) result.created++;
+  for (const c of checked) {
+    if (c.created) result.created++;
     else result.updated++;
+    if (c.key !== null && c.id !== null) runtimeSeen.set(c.key, c.id);
   }
+  result.updated += updatedFromState;
+  result.failed = posted.filter((p) => !p.ok).length;
+  for (const p of posted) {
+    if (p.ok) runtimeSeen.set(p.key, p.id);
+  }
+  saveSyncedIds(options.rootDir, runtimeSeen);
 
   return result;
+}
+
+/**
+ * Previously synced deduplication keys for a project root. Missing or
+ * corrupt state degrades to an empty set (full revision lookup) — never throws.
+ */
+function loadSyncedIds(rootDir?: string): Map<string, number | string> {
+  const out = new Map<string, number | string>();
+  if (!rootDir) return out;
+  try {
+    const raw = JSON.parse(
+      readFileSync(join(rootDir, '.codegraph', 'engram-sync-state.json'), 'utf8')
+    ) as { version?: number; idsByKey?: Record<string, number | string> };
+    if (raw && raw.version === 1 && raw.idsByKey && typeof raw.idsByKey === 'object') {
+      for (const [k, v] of Object.entries(raw.idsByKey)) out.set(k, v);
+    }
+  } catch { /* first run or unreadable — full revision lookup */ }
+  return out;
+}
+
+function saveSyncedIds(rootDir: string | undefined, ids: Map<string, number | string>): void {
+  if (!rootDir || ids.size === 0) return;
+  try {
+    mkdirSync(join(rootDir, '.codegraph'), { recursive: true });
+    writeFileSync(
+      join(rootDir, '.codegraph', 'engram-sync-state.json'),
+      JSON.stringify({ version: 1, idsByKey: Object.fromEntries(ids) })
+    );
+  } catch { /* best-effort; stateless fallback keeps working */ }
 }
 
 /**
