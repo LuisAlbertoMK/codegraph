@@ -2485,7 +2485,7 @@ export class CodeGraph {
         return;
       }
 
-      const result = await sync(insights);
+      const result = await sync(insights, undefined, { rootDir: this.getProjectRoot() });
       console.log(`[codegraph] Engram sync complete: ${result.created} created, ${result.updated} updated, ${result.failed} failed.`);
     } catch (err) {
       // Never fail sync/index over Engram
