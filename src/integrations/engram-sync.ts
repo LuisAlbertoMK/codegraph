@@ -315,6 +315,31 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs?:
 }
 
 /**
+ * Bounded-parallel map: runs fn over items with at most `limit` in flight,
+ * preserving input order in the output. The Engram server answers each call
+ * in ~30ms, so 30 sequential round trips dominate sync time (~2s); 8 lanes
+ * cut it to a few waves (~0.3s) without hammering its SQLite writer.
+ */
+const SYNC_CONCURRENCY = 8;
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  for (let i = 0; i < items.length; i += limit) {
+    const wave = items.slice(i, i + limit);
+    const results = await Promise.all(wave.map((item, j) => fn(item, i + j)));
+    for (let j = 0; j < results.length; j++) {
+      const r = results[j];
+      if (r !== undefined) out[i + j] = r;
+    }
+  }
+  return out;
+}
+
+/**
  * Sync insights to Engram via HTTP.
  *
  * Uses the Engram HTTP API (POST /observations) with deduplication.
@@ -330,7 +355,11 @@ export async function syncInsightsToEngram(
   const project = insights[0]?.project || 'codegraph';
   const sessionId = await ensureSyncSession(engramUrl, project);
 
-  for (const insight of insights) {
+  type Posted =
+    | { ok: false }
+    | { ok: true; id: number | string; key: string | null };
+
+  const posted = await mapWithConcurrency(insights, SYNC_CONCURRENCY, async (insight): Promise<Posted> => {
     try {
       const response = await fetchWithTimeout(`${engramUrl}/observations`, {
         method: 'POST',
@@ -357,28 +386,34 @@ export async function syncInsightsToEngram(
       });
 
       if (!response.ok) {
-        result.failed++;
         console.error(`[engram-sync] Failed to sync insight ${insight.deduplication_key}: ${response.status}`);
-        continue;
+        return { ok: false };
       }
       const data = (await response.json()) as { id?: number | string };
-      if (data.id === undefined) {
-        result.failed++;
-        continue;
-      }
-      // Same deduplication key upserts the same id: first revision counts as
-      // created, later ones as updated.
-      try {
-        const current = (await (await fetchWithTimeout(`${engramUrl}/observations/${data.id}`)).json()) as { revision_count?: number; duplicate_count?: number };
-        if ((current.revision_count ?? 1) <= 1 && (current.duplicate_count ?? 0) === 0) result.created++;
-        else result.updated++;
-      } catch {
-        result.updated++;
-      }
+      if (data.id === undefined) return { ok: false };
+      return { ok: true, id: data.id, key: insight.deduplication_key };
     } catch (err) {
-      result.failed++;
       console.error(`[engram-sync] Error syncing insight ${insight.deduplication_key}: ${err}`);
+      return { ok: false };
     }
+  });
+
+  // Same deduplication key upserts the same id: first revision counts as
+  // created, later ones as updated.
+  const revisions = await mapWithConcurrency(posted, SYNC_CONCURRENCY, async (p) => {
+    if (!p.ok) return p;
+    try {
+      const current = (await (await fetchWithTimeout(`${engramUrl}/observations/${p.id}`)).json()) as { revision_count?: number; duplicate_count?: number };
+      return { ...p, created: (current.revision_count ?? 1) <= 1 && (current.duplicate_count ?? 0) === 0 };
+    } catch {
+      return { ...p, created: false };
+    }
+  });
+
+  for (const r of revisions) {
+    if (!r.ok) result.failed++;
+    else if (r.created) result.created++;
+    else result.updated++;
   }
 
   return result;
