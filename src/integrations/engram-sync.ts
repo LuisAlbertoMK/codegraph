@@ -119,7 +119,14 @@ export async function extractInsights(
     if (callerCount < minCallers) continue;
     byCallers.push({ node, callerCount });
   }
-  byCallers.sort((a, b) => b.callerCount - a.callerCount);
+  // Deterministic order: score ties break by identity, never by DB row order
+  // (getNodesByKind has no ORDER BY — tie order would flip run to run).
+  const byIdentity = (a: Node, b: Node): number =>
+    a.qualifiedName < b.qualifiedName ? -1
+    : a.qualifiedName > b.qualifiedName ? 1
+    : a.filePath < b.filePath ? -1
+    : a.filePath > b.filePath ? 1 : 0;
+  byCallers.sort((a, b) => b.callerCount - a.callerCount || byIdentity(a.node, b.node));
 
   // Score centrality for the pool only. Batched membership: one handful of
   // round trips per node instead of one per walk step (~3.2x measured).
@@ -131,14 +138,19 @@ export async function extractInsights(
     scored.push({ node, callerCount, impactCount, score });
   }
 
-  // Sort by score descending
-  scored.sort((a, b) => b.score - a.score);
+  // Sort by score descending (identity tie-break — see above)
+  scored.sort((a, b) => b.score - a.score || byIdentity(a.node, b.node));
 
   // Take top N
   const top = scored.slice(0, maxInsights);
 
   // Build insights
   const insights: CodeGraphInsight[] = [];
+
+  // Deduplication keys include the file: qualifiedName alone collides
+  // across definitions (two `Node` interfaces in different files share one
+  // key and clobber each other on every sync). filePath+name is stable
+  // across re-indexes (raw node ids are not — never key on those).
   for (const { node, callerCount, impactCount } of top) {
     // Caller names only for the final top-N — one cheap lookup each.
     // Impacted names via batched membership + a 5-row fetch (focal first, as
@@ -155,7 +167,7 @@ export async function extractInsights(
     const confidence = Math.min(1, (callerCount / 20) + (impactCount / 50));
 
     const insight: CodeGraphInsight = {
-      deduplication_key: `codegraph:${project}:${node.qualifiedName}`,
+      deduplication_key: `codegraph:${project}:${node.filePath}:${node.qualifiedName}`,
       title: `${node.qualifiedName} — ${callerCount} callers, ${impactCount} impacted`,
       content: buildInsightContent(node, callerCount, impactCount, topCallers, topImpacted),
       type: 'symbol',
@@ -242,7 +254,7 @@ async function extractFlowInsights(
     const calleeNames = callees.slice(0, 5).map(c => c.node.name);
 
     flows.push({
-      deduplication_key: `codegraph:${project}:flow:${insight.qualifiedName}`,
+      deduplication_key: `codegraph:${project}:flow:${insight.filePath}:${insight.qualifiedName}`,
       title: `Flow: ${insight.qualifiedName} → ${calleeNames.join(', ')}`,
       content: [
         `Flow through ${insight.qualifiedName}:`,
@@ -351,24 +363,35 @@ export async function syncInsightsToEngram(
   insights: CodeGraphInsight[],
   engramUrl: string = process.env.ENGRAM_URL || 'http://127.0.0.1:7437',
   options: { rootDir?: string } = {}
-): Promise<{ created: number; updated: number; failed: number }> {
-  const result = { created: 0, updated: 0, failed: 0 };
+): Promise<{ created: number; updated: number; failed: number; skipped: number }> {
+  const result = { created: 0, updated: 0, failed: 0, skipped: 0 };
   if (insights.length === 0) return result;
 
   const project = insights[0]?.project || 'codegraph';
-  const sessionId = await ensureSyncSession(engramUrl, project);
 
-  // Previously synced keys skip the revision lookup (one saved round trip
-  // each). Counts for them are best-effort "updated": if the store was wiped
-  // meanwhile, the upsert still restores the insight and the tally self-heals
-  // on the next full check. State lives in .codegraph/ (gitignored, per-project).
-  const runtimeSeen = loadSyncedIds(options.rootDir);
+  // Incremental sync: insights whose content hash matches local state skip
+  // the network entirely. State v2 stores {id, hash} per key; v1 states
+  // (ids only) sync once more to record hashes. State lives in .codegraph/
+  // (gitignored, per-project). Typical syncs post 0-3 changed insights.
+  const state = loadSyncState(options.rootDir);
+  const toPost: CodeGraphInsight[] = [];
+  for (const insight of insights) {
+    const prev = state.get(insight.deduplication_key);
+    if (prev && prev.hash === insightHash(insight)) {
+      result.skipped++;
+      continue;
+    }
+    toPost.push(insight);
+  }
+  if (toPost.length === 0) return result;
+
+  const sessionId = await ensureSyncSession(engramUrl, project);
 
   type Posted =
     | { ok: false }
     | { ok: true; id: number | string; key: string };
 
-  const posted = await mapWithConcurrency(insights, SYNC_CONCURRENCY, async (insight): Promise<Posted> => {
+  const posted = await mapWithConcurrency(toPost, SYNC_CONCURRENCY, async (insight): Promise<Posted> => {
     try {
       const response = await fetchWithTimeout(`${engramUrl}/observations`, {
         method: 'POST',
@@ -408,12 +431,14 @@ export async function syncInsightsToEngram(
   });
 
   // Same deduplication key upserts the same id: first revision counts as
-  // created, later ones as updated. Keys already in state skip the lookup.
+  // created, later ones as updated. Revision lookup only for ids never seen
+  // (plus in-run first-seen); state-known keys count as updated directly.
+  const runtimeSeen = new Map(state);
   const checkIdx: number[] = [];
-  let updatedFromState = 0;
+  let updatedKnown = 0;
   posted.forEach((p, i) => {
     if (!p.ok) return;
-    if (runtimeSeen.has(p.key)) updatedFromState++;
+    if (runtimeSeen.has(p.key)) updatedKnown++;
     else checkIdx.push(i);
   });
 
@@ -432,43 +457,76 @@ export async function syncInsightsToEngram(
   for (const c of checked) {
     if (c.created) result.created++;
     else result.updated++;
-    if (c.key !== null && c.id !== null) runtimeSeen.set(c.key, c.id);
+    if (c.key !== null && c.id !== null) runtimeSeen.set(c.key, { id: c.id, hash: '' });
   }
-  result.updated += updatedFromState;
+  result.updated += updatedKnown;
   result.failed = posted.filter((p) => !p.ok).length;
-  for (const p of posted) {
-    if (p.ok) runtimeSeen.set(p.key, p.id);
-  }
-  saveSyncedIds(options.rootDir, runtimeSeen);
+  // Record hashes for everything posted OK (plus keep skipped entries)
+  posted.forEach((p, idx) => {
+    if (!p.ok) return;
+    const ins = toPost[idx];
+    if (ins) runtimeSeen.set(p.key, { id: p.id, hash: insightHash(ins) });
+  });
+  saveSyncState(options.rootDir, runtimeSeen);
 
   return result;
 }
 
 /**
- * Previously synced deduplication keys for a project root. Missing or
- * corrupt state degrades to an empty set (full revision lookup) — never throws.
+ * Content hash for change detection (FNV-1a 32-bit). Title + content cover
+ * counts, callers, and flows — any material change re-syncs the insight.
  */
-function loadSyncedIds(rootDir?: string): Map<string, number | string> {
-  const out = new Map<string, number | string>();
+function insightHash(insight: CodeGraphInsight): string {
+  const s = `${insight.title}\n${insight.content}`;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+
+type SyncStateEntry = { id: number | string; hash: string };
+
+/**
+ * Previously synced entries for a project root. Missing, corrupt, or v1
+ * state (ids without hashes) degrades gracefully: unknown hashes sync once
+ * to record them. Never throws.
+ */
+function loadSyncState(rootDir?: string): Map<string, SyncStateEntry> {
+  const out = new Map<string, SyncStateEntry>();
   if (!rootDir) return out;
   try {
     const raw = JSON.parse(
       readFileSync(join(rootDir, '.codegraph', 'engram-sync-state.json'), 'utf8')
-    ) as { version?: number; idsByKey?: Record<string, number | string> };
-    if (raw && raw.version === 1 && raw.idsByKey && typeof raw.idsByKey === 'object') {
-      for (const [k, v] of Object.entries(raw.idsByKey)) out.set(k, v);
+    ) as {
+      version?: number;
+      idsByKey?: Record<string, number | string>;
+      entries?: Record<string, { id?: number | string; hash?: string }>;
+    };
+    if (raw && raw.version === 2 && raw.entries && typeof raw.entries === 'object') {
+      for (const [k, v] of Object.entries(raw.entries)) {
+        if (v && typeof v.hash === 'string' && (typeof v.id === 'number' || typeof v.id === 'string')) {
+          out.set(k, { id: v.id, hash: v.hash });
+        }
+      }
+    } else if (raw && raw.version === 1 && raw.idsByKey && typeof raw.idsByKey === 'object') {
+      // v1 → v2 migration: ids kept, empty hash forces one re-sync to record it
+      for (const [k, v] of Object.entries(raw.idsByKey)) {
+        if (typeof v === 'number' || typeof v === 'string') out.set(k, { id: v, hash: '' });
+      }
     }
-  } catch { /* first run or unreadable — full revision lookup */ }
+  } catch { /* first run or unreadable — full sync */ }
   return out;
 }
 
-function saveSyncedIds(rootDir: string | undefined, ids: Map<string, number | string>): void {
-  if (!rootDir || ids.size === 0) return;
+function saveSyncState(rootDir: string | undefined, entries: Map<string, SyncStateEntry>): void {
+  if (!rootDir || entries.size === 0) return;
   try {
     mkdirSync(join(rootDir, '.codegraph'), { recursive: true });
     writeFileSync(
       join(rootDir, '.codegraph', 'engram-sync-state.json'),
-      JSON.stringify({ version: 1, idsByKey: Object.fromEntries(ids) })
+      JSON.stringify({ version: 2, entries: Object.fromEntries(entries) })
     );
   } catch { /* best-effort; stateless fallback keeps working */ }
 }

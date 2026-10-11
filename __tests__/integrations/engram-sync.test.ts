@@ -335,11 +335,15 @@ end
           return { node, callerCount, impactCount, score: callerCount * Math.log(impactCount + 1) };
         })
         .filter((r) => r.callerCount >= 1 && r.impactCount >= 1)
-        .sort((a, b) => b.score - a.score)
+        // Same order contract as production (score desc, identity tie-break —
+        // filePath included: qualifiedName alone collides across definitions)
+        .sort((a, b) => b.score - a.score
+          || (a.node.qualifiedName < b.node.qualifiedName ? -1 : a.node.qualifiedName > b.node.qualifiedName ? 1 : 0)
+          || (a.node.filePath < b.node.filePath ? -1 : a.node.filePath > b.node.filePath ? 1 : 0))
         .slice(0, maxInsights)
-        .map((r) => r.node.qualifiedName);
+        .map((r) => `${r.node.filePath}:${r.node.qualifiedName}`);
 
-      expect(insights.map((i) => i.qualifiedName)).toEqual(expected);
+      expect(insights.map((i) => `${i.filePath}:${i.qualifiedName}`)).toEqual(expected);
     });
 
     it('impact count matches materialized impact size', async () => {
@@ -471,14 +475,26 @@ end
 
         const first = await syncInsightsToEngram(insights, engramUrl, { rootDir: stateRoot });
         expect(first.created + first.updated).toBe(insights.length);
+        expect(first.skipped).toBe(0);
 
         const stateFile = path.join(stateRoot, '.codegraph', 'engram-sync-state.json');
         expect(fs.existsSync(stateFile)).toBe(true);
 
+        // Unchanged content: everything skipped, zero network beyond the call
         const second = await syncInsightsToEngram(insights, engramUrl, { rootDir: stateRoot });
         expect(second.failed).toBe(0);
-        expect(second.updated).toBe(insights.length);
         expect(second.created).toBe(0);
+        expect(second.updated).toBe(0);
+        expect(second.skipped).toBe(insights.length);
+
+        // Changed content: only the changed insight syncs
+        const firstInsight = insights[0];
+        expect(firstInsight).toBeDefined();
+        if (firstInsight) firstInsight.content += '\nchanged!';
+        const third = await syncInsightsToEngram(insights, engramUrl, { rootDir: stateRoot });
+        expect(third.failed).toBe(0);
+        expect(third.created + third.updated).toBe(1);
+        expect(third.skipped).toBe(insights.length - 1);
       } finally {
         fs.rmSync(stateRoot, { recursive: true, force: true });
       }
