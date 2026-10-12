@@ -7714,28 +7714,51 @@ export class ToolHandler {
    * with relevant project memory from Engram (persistent memory).
    *
    * Strategy:
-   * 1. Call normal handleExplore to get code flow
-   * 2. If includeMemory=true, search Engram for relevant context
-   * 3. Prepend memory section to explore output
-   * 4. Gracefully degrade if Engram is unavailable
+   * 1. Run normal explore and the Engram lookup CONCURRENTLY (they are
+   *    independent: the memory query needs only the raw query + project,
+   *    both known up front). Wall-clock is max(explore, memory), not the sum.
+   * 2. Prepend memory section to explore output
+   * 3. Gracefully degrade if Engram is unavailable
    */
   private async handleExploreWithMemory(args: Record<string, unknown>): Promise<ToolResult> {
     const rawQuery = this.validateString(args.query, 'query');
     if (typeof rawQuery !== 'string') return rawQuery;
 
-    // Call normal explore first
-    const exploreResult = await this.handleExplore(args);
-
     // Check if memory enrichment is requested
     const includeMemory = (args.includeMemory as boolean) ?? true;
-    if (!includeMemory) return exploreResult;
+    if (!includeMemory) return this.handleExplore(args);
 
-    // Try to get memory from Engram (non-blocking, graceful degradation)
+    // Try to get memory from Engram (non-blocking, graceful degradation).
+    // Launched alongside explore: independent inputs, so no reason to serialize.
+    const project = this.resolveEngramProject(args);
+    const memoryPromise = (async () => {
+      try {
+        const { searchEngramMemory } = await import('../integrations/engram-sync');
+        return await searchEngramMemory(rawQuery, { limit: 3, project });
+      } catch {
+        return [];
+      }
+    })();
+
+    const [exploreResult, memory] = await Promise.all([
+      this.handleExplore(args),
+      // Deadline for the memory leg: a hung Engram settles the lookup only
+      // via fetch abort after the full fetch timeout (10s). Race it so a hang
+      // holds explore at most MEMORY_LEG_TIMEOUT_MS. Real memory hits measured
+      // <=2.4s, so 3s preserves them. memoryPromise never rejects (catches
+      // all), so the race loser settling late is harmless.
+      (() => {
+        const MEMORY_LEG_TIMEOUT_MS = 3000;
+        let legTimer: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<never[]>((resolve) => {
+          legTimer = setTimeout(() => resolve([]), MEMORY_LEG_TIMEOUT_MS);
+          (legTimer as unknown as { unref?: () => void }).unref?.();
+        });
+        return Promise.race([memoryPromise, deadline]).finally(() => clearTimeout(legTimer));
+      })(),
+    ]);
+
     try {
-      const { searchEngramMemory } = await import('../integrations/engram-sync');
-      const project = this.resolveEngramProject(args);
-      const memory = await searchEngramMemory(rawQuery, { limit: 3, project });
-
       if (memory.length === 0) return exploreResult;
 
       // Build memory section
