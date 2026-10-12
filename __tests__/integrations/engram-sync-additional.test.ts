@@ -12,12 +12,13 @@
  * 8. Unicode characters in symbol names
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { spawn, ChildProcess } from 'node:child_process';
 import CodeGraph from '../../src/index';
+import { ToolHandler } from '../../src/mcp/tools';
 import {
   extractInsights,
   syncInsightsToEngram,
@@ -634,5 +635,178 @@ export { calc, proc, val };
       expect(result.failed).toBe(0);
       expect(result.created + result.updated).toBe(50);
     });
+  });
+
+  // =========================================================================
+  // OR fallback on strict-AND miss (code vocab vs prose memory)
+  // =========================================================================
+
+  describe('searchEngramMemory - OR fallback', () => {
+    // Strict-AND server: a row matches only when EVERY term occurs in it,
+    // like real Engram FTS5. `authentication` occurs in no row, `login` in one.
+    const ROWS = [
+      { title: 'Login guard', content: 'test_auth_login cache freshness guard', rank: -4.1, type: 'bugfix' },
+      { title: 'Pipeline notes', content: 'tracking pipeline sweep decisions', rank: -2.0, type: 'decision' },
+    ];
+    let andServer: import('node:http').Server | null = null;
+    let andUrl = '';
+    const seenQueries: string[] = [];
+
+    beforeAll(async () => {
+      const http = await import('node:http');
+      andServer = http.createServer((req, res) => {
+        const u = new URL(req.url || '/', 'http://localhost');
+        if (u.pathname !== '/search') {
+          res.statusCode = 404;
+          res.end('[]');
+          return;
+        }
+        const q = (u.searchParams.get('q') || '').toLowerCase();
+        seenQueries.push(q);
+        const terms = q.split(/\s+/).filter(Boolean);
+        const hits = ROWS.filter((r) => {
+          const hay = `${r.title} ${r.content}`.toLowerCase();
+          return terms.length > 0 && terms.every((t) => hay.includes(t));
+        });
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(hits));
+      });
+      await new Promise<void>((resolve) => andServer!.listen(0, '127.0.0.1', resolve));
+      const addr = andServer.address();
+      andUrl = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+    });
+
+    afterAll(async () => {
+      await new Promise<void>((resolve, reject) =>
+        andServer!.close((e) => (e ? reject(e) : resolve())));
+      andServer = null;
+    });
+
+    it('falls back to per-term retrieval when strict AND matches nothing', async () => {
+      // `authentication` matches zero rows: strict AND is empty, but the
+      // `login` fallback must surface the Login guard row.
+      const results = await searchEngramMemory('authentication login', {
+        engramUrl: andUrl,
+        project: 'fallback-probe',
+      });
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.some((r) => r.title === 'Login guard')).toBe(true);
+      // Strict query + one fetch per fallback term.
+      expect(seenQueries).toContain('authentication login');
+      expect(seenQueries).toContain('login');
+    });
+
+    it('does not fetch extra requests when the strict query hits', async () => {
+      seenQueries.length = 0;
+      const results = await searchEngramMemory('login guard', {
+        engramUrl: andUrl,
+        project: 'fallback-noop',
+      });
+      expect(results.length).toBeGreaterThan(0);
+      expect(seenQueries).toEqual(['login guard']);
+    });
+
+    it('merges, dedupes and respects the limit', async () => {
+      // Both singles hit overlapping rows; limit 1 must win after score sort.
+      const results = await searchEngramMemory('authentication pipeline', {
+        limit: 1,
+        engramUrl: andUrl,
+        project: 'fallback-limit',
+      });
+      expect(results.length).toBe(1);
+      // Highest rank (closest to zero) first.
+      expect(results[0].title).toBe('Pipeline notes');
+    });
+
+    it('strict results win over cached fallback once new data matches', async () => {
+      // Mutable dataset: phase 1 behaves like the frozen server above.
+      const rows = [
+        { title: 'Login guard', content: 'test_auth_login cache freshness guard', rank: -4.1, type: 'bugfix' },
+      ];
+      const http = await import('node:http');
+      const mutable = http.createServer((req, res) => {
+        const u = new URL(req.url || '/', 'http://localhost');
+        const q = (u.searchParams.get('q') || '').toLowerCase();
+        const terms = q.split(/\s+/).filter(Boolean);
+        const hits = rows.filter((r) => {
+          const hay = `${r.title} ${r.content}`.toLowerCase();
+          return terms.length > 0 && terms.every((t) => hay.includes(t));
+        });
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(hits));
+      });
+      await new Promise<void>((resolve) => mutable.listen(0, '127.0.0.1', resolve));
+      const addr = mutable.address();
+      const mutableUrl = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+      try {
+        const project = 'fallback-stale-probe';
+        const first = await searchEngramMemory('authentication login', {
+          engramUrl: mutableUrl,
+          project,
+        });
+        expect(first.some((r) => r.title === 'Login guard')).toBe(true);
+
+        // New memory arrives that matches the strict AND query.
+        rows.push({
+          title: 'Auth notes',
+          content: 'authentication login flow decisions',
+          rank: -1.0,
+          type: 'decision',
+        });
+        const second = await searchEngramMemory('authentication login', {
+          engramUrl: mutableUrl,
+          project,
+        });
+        // Strict hit must win: no stale OR-only rows served from cache.
+        expect(second.some((r) => r.title === 'Auth notes')).toBe(true);
+        expect(second.some((r) => r.title === 'Login guard')).toBe(false);
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          mutable.close((e) => (e ? reject(e) : resolve())));
+      }
+    });
+  });
+
+  // =========================================================================
+  // Round-one fixes: memory-leg deadline
+  // =========================================================================
+
+  describe('explore_with_memory - memory deadline', () => {
+    it('returns explore results when Engram hangs, well under the fetch timeout', async () => {
+      const http = await import('node:http');
+      const hanging = http.createServer(() => { /* accept, never respond */ });
+      await new Promise<void>((resolve) => hanging.listen(0, '127.0.0.1', resolve));
+      const addr = hanging.address();
+      const hangingUrl = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+
+      const prevUrl = process.env.ENGRAM_URL;
+      process.env.ENGRAM_URL = hangingUrl;
+      process.env.CODEGRAPH_ENGRAM_ENABLED = '1';
+      try {
+        const handler = new ToolHandler(cg);
+        const base = await handler.execute('codegraph_explore', { query: 'login', projectPath: testDir });
+        const baseText = (base.content?.[0] as { text?: string })?.text || '';
+
+        const t0 = Date.now();
+        const enriched = await handler.execute('codegraph_explore_with_memory', {
+          query: 'login',
+          projectPath: testDir,
+        });
+        const elapsed = Date.now() - t0;
+        const enrichedText = (enriched.content?.[0] as { text?: string })?.text || '';
+
+        // Hung memory must not hold explore hostage for the 10s fetch timeout.
+        expect(elapsed).toBeLessThan(9000);
+        // Graceful degradation: identical to baseline, no memory section.
+        expect(enrichedText).toBe(baseText);
+        expect(enrichedText.includes('Project Memory')).toBe(false);
+      } finally {
+        if (prevUrl === undefined) delete process.env.ENGRAM_URL;
+        else process.env.ENGRAM_URL = prevUrl;
+        hanging.closeAllConnections();
+        await new Promise<void>((resolve, reject) =>
+          hanging.close((e) => (e ? reject(e) : resolve())));
+      }
+    }, 20000);
   });
 });

@@ -588,15 +588,51 @@ function memoryQueryTerms(query: string): string {
   return terms.length > 0 ? terms.join(' ') : query;
 }
 
+export interface EngramMemoryHit {
+  title: string;
+  content: string;
+  score: number;
+  type: string;
+}
+
+async function fetchMemoryHits(
+  terms: string,
+  limit: number,
+  project: string | undefined,
+  engramUrl: string,
+): Promise<EngramMemoryHit[]> {
+  const params = new URLSearchParams({ q: terms, limit: String(limit) });
+  if (project) params.set('project', project);
+
+  const response = await fetchWithTimeout(`${engramUrl}/search?${params}`);
+  if (!response.ok) return [];
+
+  // Real API returns a bare array of observations (rank doubles as score).
+  // Rows may carry nulls (session markers, imports) — coerce, never throw.
+  const data = (await response.json()) as Array<{ title: string; content: string; rank?: number; type: string }>;
+  return (Array.isArray(data) ? data : []).map((r) => ({
+    title: String(r.title ?? 'Untitled'),
+    content: String(r.content ?? ''),
+    score: r.rank ?? 0,
+    type: r.type || 'unknown',
+  }));
+}
+
 /**
  * Search Engram memory for context relevant to a query.
  *
  * Returns matching observations that can enrich explore results.
+ *
+ * Engram search is term-AND: every term must occur in the same row. Code
+ * queries (`authentication login`) use code vocabulary that often matches
+ * nothing in prose memory (`auth`, `test_auth_login`), so a strict miss
+ * falls back to per-term (OR) retrieval merged by score — bounded to `limit`
+ * and cached like the strict path. Extra fetches happen only on a miss.
  */
 export async function searchEngramMemory(
   query: string,
   options: { limit?: number; project?: string; engramUrl?: string } = {}
-): Promise<Array<{ title: string; content: string; score: number; type: string }>> {
+): Promise<EngramMemoryHit[]> {
   const { limit = 3, project, engramUrl = process.env.ENGRAM_URL || 'http://127.0.0.1:7437' } = options;
 
   // Check cache first
@@ -605,26 +641,56 @@ export async function searchEngramMemory(
   if (cached) return cached;
 
   try {
-    const params = new URLSearchParams({ q: memoryQueryTerms(query), limit: String(limit) });
-    if (project) params.set('project', project);
+    const terms = memoryQueryTerms(query);
+    const results = await fetchMemoryHits(terms, limit, project, engramUrl);
+    if (results.length > 0) {
+      // Cache results
+      setCachedResults(cacheKey, results);
+      return results;
+    }
 
-    const response = await fetchWithTimeout(`${engramUrl}/search?${params}`);
-    if (!response.ok) return [];
+    // Fallback results live under their own key: caching them under the
+    // strict key would keep serving OR-merged rows for 60s even after new
+    // data arrives that matches the strict AND query. Strict empties stay
+    // uncached so a later strict hit is always discovered fresh.
+    const orCacheKey = `${cacheKey}${'\u0000'}or`;
+    const orCached = getCachedResults(orCacheKey);
+    if (orCached) return orCached;
 
-    // Real API returns a bare array of observations (rank doubles as score).
-    // Rows may carry nulls (session markers, imports) — coerce, never throw.
-    const data = (await response.json()) as Array<{ title: string; content: string; rank?: number; type: string }>;
-    const results = (Array.isArray(data) ? data : []).map((r) => ({
-      title: String(r.title ?? 'Untitled'),
-      content: String(r.content ?? ''),
-      score: r.rank ?? 0,
-      type: r.type || 'unknown',
-    }));
-
-    // Cache results
-    setCachedResults(cacheKey, results);
-    return results;
+    const orResults = await fetchMemoryHitsOr(terms, limit, project, engramUrl);
+    setCachedResults(orCacheKey, orResults);
+    return orResults;
   } catch {
     return [];
   }
+}
+
+/**
+ * Per-term (OR) retrieval merged by score, used only on a strict-AND miss.
+ * Bounded to `limit` rows: stops fetching once enough unique hits exist.
+ */
+async function fetchMemoryHitsOr(
+  terms: string,
+  limit: number,
+  project: string | undefined,
+  engramUrl: string,
+): Promise<EngramMemoryHit[]> {
+  const singles = terms.split(/\s+/).filter((t) => t.length > 0);
+  if (singles.length <= 1) return [];
+  const seen = new Set<string>();
+  const merged: EngramMemoryHit[] = [];
+  for (const single of singles) {
+    const hits = await fetchMemoryHits(single, limit, project, engramUrl);
+    for (const h of hits) {
+      const key = `${h.title}\n${h.content.slice(0, 160)}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(h);
+      }
+      if (merged.length >= limit) break;
+    }
+    if (merged.length >= limit) break;
+  }
+  merged.sort((a, b) => b.score - a.score);
+  return merged.slice(0, limit);
 }
