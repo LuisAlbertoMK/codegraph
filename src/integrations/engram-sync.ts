@@ -19,6 +19,43 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 // ============================================================================
+// Memory Cache (session-level, avoids repeated Engram calls for same query)
+// ============================================================================
+
+interface CacheEntry<T> {
+  results: T;
+  timestamp: number;
+}
+
+/**
+ * Simple in-memory cache for Engram search results.
+ * - Key: project + normalized query
+ * - TTL: 60 seconds (balances freshness vs. performance)
+ * - Auto-expires: entries older than TTL are ignored
+ * - Session-only: cleared when process exits
+ */
+const MEMORY_CACHE_TTL_MS = 60_000;
+const memoryCache = new Map<string, CacheEntry<Array<{ title: string; content: string; score: number; type: string }>>>();
+
+function getCacheKey(project: string | undefined, query: string): string {
+  return `${project || 'all'}:${query.toLowerCase().trim()}`;
+}
+
+function getCachedResults(key: string): Array<{ title: string; content: string; score: number; type: string }> | null {
+  const entry = memoryCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > MEMORY_CACHE_TTL_MS) {
+    memoryCache.delete(key);
+    return null;
+  }
+  return entry.results;
+}
+
+function setCachedResults(key: string, results: Array<{ title: string; content: string; score: number; type: string }>): void {
+  memoryCache.set(key, { results, timestamp: Date.now() });
+}
+
+// ============================================================================
 // Types
 // ============================================================================
 
@@ -562,6 +599,11 @@ export async function searchEngramMemory(
 ): Promise<Array<{ title: string; content: string; score: number; type: string }>> {
   const { limit = 3, project, engramUrl = process.env.ENGRAM_URL || 'http://127.0.0.1:7437' } = options;
 
+  // Check cache first
+  const cacheKey = getCacheKey(project, query);
+  const cached = getCachedResults(cacheKey);
+  if (cached) return cached;
+
   try {
     const params = new URLSearchParams({ q: memoryQueryTerms(query), limit: String(limit) });
     if (project) params.set('project', project);
@@ -572,12 +614,16 @@ export async function searchEngramMemory(
     // Real API returns a bare array of observations (rank doubles as score).
     // Rows may carry nulls (session markers, imports) — coerce, never throw.
     const data = (await response.json()) as Array<{ title: string; content: string; rank?: number; type: string }>;
-    return (Array.isArray(data) ? data : []).map((r) => ({
+    const results = (Array.isArray(data) ? data : []).map((r) => ({
       title: String(r.title ?? 'Untitled'),
       content: String(r.content ?? ''),
       score: r.rank ?? 0,
       type: r.type || 'unknown',
     }));
+
+    // Cache results
+    setCachedResults(cacheKey, results);
+    return results;
   } catch {
     return [];
   }

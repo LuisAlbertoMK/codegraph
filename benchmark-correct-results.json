@@ -1,0 +1,137 @@
+{
+  "timestamp": "2026-10-12T16:37:46.559Z",
+  "repository": "Ford-MYCO",
+  "project_key": "reportes-myco",
+  "query": "reporte",
+  "reps": 10,
+  "baseline_separate": {
+    "description": "CodeGraph explore + Engram search (2 calls)",
+    "median_ms": 178,
+    "median_chars": 24686,
+    "runs": [
+      {
+        "ms": 178,
+        "chars": 24686,
+        "cg_chars": 21639,
+        "engram_results": 5
+      },
+      {
+        "ms": 147,
+        "chars": 24686,
+        "cg_chars": 21639,
+        "engram_results": 5
+      },
+      {
+        "ms": 143,
+        "chars": 24686,
+        "cg_chars": 21639,
+        "engram_results": 5
+      },
+      {
+        "ms": 155,
+        "chars": 24686,
+        "cg_chars": 21639,
+        "engram_results": 5
+      },
+      {
+        "ms": 170,
+        "chars": 24686,
+        "cg_chars": 21639,
+        "engram_results": 5
+      },
+      {
+        "ms": 157,
+        "chars": 24686,
+        "cg_chars": 21639,
+        "engram_results": 5
+      },
+      {
+        "ms": 332,
+        "chars": 24686,
+        "cg_chars": 21639,
+        "engram_results": 5
+      },
+      {
+        "ms": 413,
+        "chars": 24686,
+        "cg_chars": 21639,
+        "engram_results": 5
+      },
+      {
+        "ms": 217,
+        "chars": 24686,
+        "cg_chars": 21639,
+        "engram_results": 5
+      },
+      {
+        "ms": 300,
+        "chars": 24686,
+        "cg_chars": 21639,
+        "engram_results": 5
+      }
+    ]
+  },
+  "integrated": {
+    "description": "CodeGraph explore_with_memory (1 call)",
+    "median_ms": 251,
+    "median_chars": 23395,
+    "runs": [
+      {
+        "ms": 405,
+        "chars": 23395,
+        "hasMemory": true
+      },
+      {
+        "ms": 228,
+        "chars": 23395,
+        "hasMemory": true
+      },
+      {
+        "ms": 211,
+        "chars": 23395,
+        "hasMemory": true
+      },
+      {
+        "ms": 291,
+        "chars": 23395,
+        "hasMemory": true
+      },
+      {
+        "ms": 202,
+        "chars": 23395,
+        "hasMemory": true
+      },
+      {
+        "ms": 262,
+        "chars": 23395,
+        "hasMemory": true
+      },
+      {
+        "ms": 225,
+        "chars": 23395,
+        "hasMemory": true
+      },
+      {
+        "ms": 251,
+        "chars": 23395,
+        "hasMemory": true
+      },
+      {
+        "ms": 275,
+        "chars": 23395,
+        "hasMemory": true
+      },
+      {
+        "ms": 210,
+        "chars": 23395,
+        "hasMemory": true
+      }
+    ]
+  },
+  "comparison": {
+    "time_savings_ms": -73,
+    "time_savings_pct": "-41.0",
+    "chars_diff": -1291,
+    "memory_enrichment": "10/10"
+  }
+}
