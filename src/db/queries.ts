@@ -1312,6 +1312,22 @@ export class QueryBuilder {
   }
 
   /**
+   * Get all nodes of any of the given kinds in one `IN` query rather than
+   * one {@link getNodesByKind} per kind. Same canonical order; callers that
+   * sort afterwards see identical results either way. Fresh statement per
+   * call (placeholder count varies with the input, so it can't be shared).
+   */
+  getNodesByKinds(kinds: readonly NodeKind[]): Node[] {
+    const unique = [...new Set(kinds)];
+    if (unique.length === 0) return [];
+    const placeholders = unique.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(`SELECT * FROM nodes WHERE kind IN (${placeholders}) ORDER BY file_path, start_line, id`)
+      .all(...unique) as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
+  /**
    * Stream every node of a kind one at a time (lazy) instead of materializing
    * them all like {@link getNodesByKind}. For unbounded kinds (`function`,
    * `method`) on a symbol-dense project the full array is gigabytes; the

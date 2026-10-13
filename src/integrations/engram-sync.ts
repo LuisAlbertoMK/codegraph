@@ -132,11 +132,10 @@ export async function extractInsights(
     includeFlows = true,
   } = options;
 
-  // Get all code-bearing nodes
-  const allNodes = graph.getNodesByKind('function')
-    .concat(graph.getNodesByKind('method'))
-    .concat(graph.getNodesByKind('class'))
-    .concat(graph.getNodesByKind('interface'));
+  // All code-bearing nodes in one IN query instead of four scans. The rows
+  // come back interleaved rather than grouped by kind, but stage 1 sorts
+  // deterministically below, so the order changes nothing downstream.
+  const allNodes = graph.getNodesByKinds(['function', 'method', 'class', 'interface']);
 
   // Two-stage ranking: a caller lookup is cheap (~0.15ms) while the depth-2
   // impact walk is ~10x costlier and dominates extraction on large repos.
@@ -167,12 +166,15 @@ export async function extractInsights(
 
   // Score centrality for the pool only. Batched membership: one handful of
   // round trips per node instead of one per walk step (~3.2x measured).
-  const scored: Array<{ node: Node; callerCount: number; impactCount: number; score: number }> = [];
+  // The impact set travels with the score: the build step below reuses it
+  // instead of re-walking the same nodes (the walk dominates extraction).
+  const scored: Array<{ node: Node; callerCount: number; impactCount: number; impactIds: Set<string>; score: number }> = [];
   for (const { node, callerCount } of byCallers.slice(0, poolSize)) {
-    const impactCount = graph.getImpactIdsBatched(node.id, 2).size;
+    const impactIds = graph.getImpactIdsBatched(node.id, 2);
+    const impactCount = impactIds.size;
     if (impactCount < minImpact) continue;
     const score = callerCount * Math.log(impactCount + 1);
-    scored.push({ node, callerCount, impactCount, score });
+    scored.push({ node, callerCount, impactCount, impactIds, score });
   }
 
   // Sort by score descending (identity tie-break — see above)
@@ -188,12 +190,18 @@ export async function extractInsights(
   // across definitions (two `Node` interfaces in different files share one
   // key and clobber each other on every sync). filePath+name is stable
   // across re-indexes (raw node ids are not — never key on those).
-  for (const { node, callerCount, impactCount } of top) {
+  for (const { node, callerCount, impactCount, impactIds } of top) {
     // Caller names only for the final top-N — one cheap lookup each.
-    // Impacted names via batched membership + a 5-row fetch (focal first, as
-    // before). Sample order follows BFS discovery (was DFS) — names only.
+    // Impacted names reuse the scoring walk above (same Set object, so the
+    // sample order is identical to re-walking) + a 5-row fetch. First-5 via
+    // iterator: a hub's depth-2 set can hold thousands of ids and only 5 are
+    // kept — spreading it all just to slice is pure garbage.
     const callers = graph.getCallers(node.id, 1);
-    const impactSample = [...graph.getImpactIdsBatched(node.id, 2)].slice(0, 5);
+    const impactSample: string[] = [];
+    for (const id of impactIds) {
+      if (impactSample.length >= 5) break;
+      impactSample.push(id);
+    }
     const impactNodes = impactSample.length > 1 ? graph.getNodesByIds(impactSample.slice(1)) : new Map<string, Node>();
     const topCallers = callers
       .slice(0, 5)
@@ -467,36 +475,17 @@ export async function syncInsightsToEngram(
     }
   });
 
-  // Same deduplication key upserts the same id: first revision counts as
-  // created, later ones as updated. Revision lookup only for ids never seen
-  // (plus in-run first-seen); state-known keys count as updated directly.
+  // Same deduplication key upserts the same id: a key the pre-sync local
+  // state already knew counts as updated, a first-seen key as created. The
+  // counts are observability only — server-side dedup by deduplication_key
+  // stays correct regardless — so no revision GETs: trusting local state
+  // drops N round-trips per sync (roughly half the requests on first syncs).
   const runtimeSeen = new Map(state);
-  const checkIdx: number[] = [];
-  let updatedKnown = 0;
-  posted.forEach((p, i) => {
-    if (!p.ok) return;
-    if (runtimeSeen.has(p.key)) updatedKnown++;
-    else checkIdx.push(i);
-  });
-
-  const checked = await mapWithConcurrency(checkIdx, SYNC_CONCURRENCY, async (i) => {
-    const p = posted[i];
-    if (!p || !p.ok) return { created: false, key: null as string | null, id: null as number | string | null };
-    try {
-      const current = (await (await fetchWithTimeout(`${engramUrl}/observations/${p.id}`)).json()) as { revision_count?: number; duplicate_count?: number };
-      const created = (current.revision_count ?? 1) <= 1 && (current.duplicate_count ?? 0) === 0;
-      return { created, key: p.key as string, id: p.id as number | string };
-    } catch {
-      return { created: false, key: p.key as string, id: p.id as number | string };
-    }
-  });
-
-  for (const c of checked) {
-    if (c.created) result.created++;
-    else result.updated++;
-    if (c.key !== null && c.id !== null) runtimeSeen.set(c.key, { id: c.id, hash: '' });
+  for (const p of posted) {
+    if (!p.ok) continue;
+    if (runtimeSeen.has(p.key)) result.updated++;
+    else result.created++;
   }
-  result.updated += updatedKnown;
   result.failed = posted.filter((p) => !p.ok).length;
   // Record hashes for everything posted OK (plus keep skipped entries)
   posted.forEach((p, idx) => {

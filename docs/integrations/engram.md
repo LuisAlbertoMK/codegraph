@@ -114,14 +114,36 @@ After each index/sync, CodeGraph extracts key insights and persists them to Engr
 - Maximum 50 insights per sync (configurable)
 - Confidence score based on caller count + impact radius
 
+### Extraction performance
+
+Ranking walks a candidate pool (at most 100 by caller count) once and
+reuses each walk when building the final insights; node loading is a single
+query and only the first few impacted ids of each hub are sampled. Results
+are identical to walking everything twice — the ranking is pinned by tests
+against brute-force scoring.
+
 ### Deduplication
 
 Each insight carries a `deduplication_key`:
 ```
-codegraph:{project}:{qualified_name}
+codegraph:{project}:{file_path}:{qualified_name}
 ```
 
 Re-indexing updates existing observations instead of duplicating them.
+The file path is part of the key: a qualified name alone collides across
+definitions (two `Node` interfaces in different files would clobber each
+other on every sync).
+
+### Sync state
+
+Syncs after the first one skip insights whose content hash matches the
+local record in `.codegraph/engram-sync-state.json`, so steady-state syncs
+usually post nothing. Whether a synced insight counts as created or updated
+also comes from that record — the sync never re-checks with the server —
+so a first sync takes about one request per insight plus the session setup.
+Without a project root (stateless scripts and tests) there is no record and
+re-syncs count everything as created; the server still upserts by key, so no
+duplicates are stored.
 
 ## Benchmarks
 
@@ -134,7 +156,7 @@ Re-indexing updates existing observations instead of duplicating them.
 
 - Average explore latency: 2255ms (normal explore in the same run: 2115ms)
 - Memory enrichment overhead: ~35ms on the real MCP path (`benchmark-mcp-memory.mjs`); CLI-proxy measurement: 140ms (6.6%)
-- Insight sync: ~2.5s for 30 insights on a 10k-file repo (batched impact walks, non-blocking fire-and-forget)
+- Insight sync: ~2.5s for 30 insights on a 10k-file repo (batched impact walks, non-blocking fire-and-forget; first syncs now take about one request per insight with no per-insight re-check, and steady-state syncs skip unchanged insights)
 
 See `docs/benchmarks/engram-integration-baseline.json` and `docs/benchmarks/engram-integration-post-implementation.json` for full results.
 

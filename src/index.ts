@@ -1845,6 +1845,13 @@ export class CodeGraph {
   }
 
   /**
+   * Get all nodes of any of the given kinds in one query
+   */
+  getNodesByKinds(kinds: ReadonlyArray<Node['kind']>): Node[] {
+    return this.queries.getNodesByKinds(kinds);
+  }
+
+  /**
    * Get ALL nodes with an exact name (direct index lookup, not FTS-ranked/capped).
    * Used to enumerate every overload of a heavily-overloaded name so the specific
    * definition the caller wants is never dropped below a search cut.

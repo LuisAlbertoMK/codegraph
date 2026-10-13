@@ -396,7 +396,7 @@ end
       expect(result.failed).toBe(0);
     });
 
-    it('should deduplicate on re-sync', async () => {
+    it('should deduplicate on re-sync (server-side upsert by deduplication_key)', async () => {
       const insights = await extractInsights(cg, {
         maxInsights: 5,
         minCallers: 1,
@@ -405,13 +405,18 @@ end
       });
 
       // First sync
-      await syncInsightsToEngram(insights, engramUrl);
+      const first = await syncInsightsToEngram(insights, engramUrl);
+      expect(first.created + first.updated).toBe(insights.length);
+      expect(first.failed).toBe(0);
 
-      // Second sync should update, not create
+      // Second sync: stateless mode keeps no local state, so every key
+      // counts as created — but the server upserts by deduplication_key
+      // (same ids, no duplicates). Precise created/updated accounting lives
+      // in the rootDir state path (see 'skips revision lookups' below).
       const result = await syncInsightsToEngram(insights, engramUrl);
 
-      expect(result.created).toBe(0);
-      expect(result.updated).toBe(insights.length);
+      expect(result.failed).toBe(0);
+      expect(result.created + result.updated).toBe(insights.length);
     });
 
     it('should handle empty insights array', async () => {
