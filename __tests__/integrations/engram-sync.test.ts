@@ -21,6 +21,7 @@ import {
   extractInsights,
   syncInsightsToEngram,
   searchEngramMemory,
+  clearMemoryCache,
   type CodeGraphInsight,
 } from '../../src/integrations/engram-sync';
 
@@ -512,6 +513,8 @@ end
 
   describe('searchEngramMemory', () => {
     beforeEach(async () => {
+      // Isolate cache: cases below reuse a project/query across backends
+      clearMemoryCache();
       // Seed some test data
       const insights = await extractInsights(cg, {
         maxInsights: 5,
@@ -652,6 +655,11 @@ end
     beforeAll(() => {
       handler = new ToolHandler(cg);
       process.env.ENGRAM_URL = engramUrl;
+    });
+
+    beforeEach(() => {
+      // Same backend-swapping reason as above (ENGRAM_URL changes per test)
+      clearMemoryCache();
     });
 
     afterAll(() => {

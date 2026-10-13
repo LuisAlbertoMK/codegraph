@@ -96,6 +96,11 @@ Direct recall over persistent memory — no code flow. Pairs with `codegraph_exp
 2. Returns titled memories with type and score
 3. Returns gracefully (never errors) when Engram is unavailable or nothing matches
 
+**Memory search cache:** answers are cached per backend server, project,
+query and result count for 60 seconds, so repeated questions in a session
+don't hit Engram again. Strict misses fall back to per-term retrieval under
+its own cache entry, keeping fresh strict matches discoverable.
+
 ## Insight Extraction
 
 After each index/sync, CodeGraph extracts key insights and persists them to Engram:

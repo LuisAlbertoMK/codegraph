@@ -29,16 +29,25 @@ interface CacheEntry<T> {
 
 /**
  * Simple in-memory cache for Engram search results.
- * - Key: project + normalized query
+ * - Key: backend URL + project + normalized query + limit. A key without
+ *   the URL serves one backend's rows for another and masks outages.
  * - TTL: 60 seconds (balances freshness vs. performance)
  * - Auto-expires: entries older than TTL are ignored
- * - Session-only: cleared when process exits
+ * - Session-only: cleared when process exits (or via clearMemoryCache)
  */
 const MEMORY_CACHE_TTL_MS = 60_000;
 const memoryCache = new Map<string, CacheEntry<Array<{ title: string; content: string; score: number; type: string }>>>();
 
-function getCacheKey(project: string | undefined, query: string): string {
-  return `${project || 'all'}:${query.toLowerCase().trim()}`;
+function getCacheKey(project: string | undefined, query: string, engramUrl: string, limit: number): string {
+  return `${engramUrl}\n${project || 'all'}:${query.toLowerCase().trim()}:${limit}`;
+}
+
+/**
+ * Drop all cached Engram search results. Tests call this to isolate cases
+ * that reuse a project/query against different backends.
+ */
+export function clearMemoryCache(): void {
+  memoryCache.clear();
 }
 
 function getCachedResults(key: string): Array<{ title: string; content: string; score: number; type: string }> | null {
@@ -624,8 +633,8 @@ export async function searchEngramMemory(
 ): Promise<EngramMemoryHit[]> {
   const { limit = 3, project, engramUrl = process.env.ENGRAM_URL || 'http://127.0.0.1:7437' } = options;
 
-  // Check cache first
-  const cacheKey = getCacheKey(project, query);
+  // Check cache first (keyed by backend + project + query + limit)
+  const cacheKey = getCacheKey(project, query, engramUrl, limit);
   const cached = getCachedResults(cacheKey);
   if (cached) return cached;
 
