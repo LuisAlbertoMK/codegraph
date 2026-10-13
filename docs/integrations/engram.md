@@ -123,9 +123,11 @@ After each index/sync, CodeGraph extracts key insights and persists them to Engr
 
 Ranking walks a candidate pool (at most 100 by caller count) once and
 reuses each walk when building the final insights; node loading is a single
-query and only the first few impacted ids of each hub are sampled. Results
+query and only the first few impacted ids of each hub are sampled, skipping
+the hub itself (its own name is not a useful neighbor). Selection and counts
 are identical to walking everything twice — the ranking is pinned by tests
-against brute-force scoring.
+against brute-force scoring, and tests pin that the focal symbol never
+appears among topImpacted.
 
 ### Deduplication
 

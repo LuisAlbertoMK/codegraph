@@ -204,19 +204,23 @@ export async function extractInsights(
     // Impacted names reuse the scoring walk above (same Set object, so the
     // sample order is identical to re-walking) + a 5-row fetch. First-5 via
     // iterator: a hub's depth-2 set can hold thousands of ids and only 5 are
-    // kept — spreading it all just to slice is pure garbage.
+    // kept — spreading it all just to slice is pure garbage. The focal id
+    // leads the set (platform convention: impact includes self, same as
+    // explore/viewer counts) but is skipped here: it is not an "impacted"
+    // neighbor, and its own name would pollute the searchable text.
     const callers = graph.getCallers(node.id, 1);
     const impactSample: string[] = [];
     for (const id of impactIds) {
+      if (id === node.id) continue;
       if (impactSample.length >= 5) break;
       impactSample.push(id);
     }
-    const impactNodes = impactSample.length > 1 ? graph.getNodesByIds(impactSample.slice(1)) : new Map<string, Node>();
+    const impactNodes = impactSample.length > 0 ? graph.getNodesByIds(impactSample) : new Map<string, Node>();
     const topCallers = callers
       .slice(0, 5)
       .map(c => c.node.name);
 
-    const topImpacted = impactSample.map((id, i) => i === 0 ? node.name : impactNodes.get(id)?.name ?? id);
+    const topImpacted = impactSample.map((id) => impactNodes.get(id)?.name ?? id);
 
     const confidence = Math.min(1, (callerCount / 20) + (impactCount / 50));
 

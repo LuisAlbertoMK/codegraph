@@ -262,6 +262,25 @@ end
       }
     });
 
+    it('never lists the focal symbol among topImpacted', async () => {
+      const insights = await extractInsights(cg, {
+        maxInsights: 10,
+        minCallers: 1,
+        minImpact: 1,
+        project: 'test-project',
+      });
+
+      expect(insights.length).toBeGreaterThan(0);
+      // Fixture symbol names are unique per symbol (constructors aside, and
+      // neither constructor's set contains the other), so a name match means
+      // the focal symbol itself leaked into its own impacted sample — the
+      // impact set leads with the focal id by platform convention.
+      for (const insight of insights.filter((i) => i.type === 'symbol')) {
+        expect(insight.topImpacted).not.toContain(insight.name);
+        expect(insight.topImpacted.length).toBeLessThanOrEqual(5);
+      }
+    });
+
     it('should respect maxInsights limit', async () => {
       const insights = await extractInsights(cg, {
         maxInsights: 3,

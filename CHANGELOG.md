@@ -117,6 +117,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Extracting project insights for Engram sync now reuses each symbol's impact walk between the ranking and detail steps instead of walking the same part of the graph twice, so extraction does about a quarter fewer graph walks with identical results.
 - Searching project memory (`codegraph_memory_search` and `codegraph_explore_with_memory`) no longer risks answering from the wrong memory server: cached answers are now kept separate per server and result count, so switching servers — or losing the connection — can't keep showing stale insights.
 - Loading the symbols for Engram insight extraction now takes one database pass instead of four, and sampling a symbol's most-affected neighbors no longer copies thousands of entries to keep five — extraction does less work with identical results.
+- Project insights synced to Engram no longer list the symbol itself among its most-affected neighbors: that slot now names another affected symbol instead.
 
 ## [1.6.2] - 2026-10-03
 
