@@ -714,8 +714,129 @@ export { calc, proc, val };
         project: 'fallback-limit',
       });
       expect(results.length).toBe(1);
-      // Highest rank (closest to zero) first.
+      // Real FTS polarity: more negative = stronger match, best-first.
+      // Single candidate either way — this pins the limit, not the order.
       expect(results[0].title).toBe('Pipeline notes');
+    });
+
+    it('fetches every term instead of letting the first one fill the limit', async () => {
+      // Starvation regression: 'alpha' alone matches 2 rows while the
+      // strongest match ('Beta notes', most negative rank — rare term, strong
+      // match) answers only 'beta'. Old code filled both slots with alpha
+      // rows and never fetched 'beta' at all.
+      const rows = [
+        { title: 'Alpha config', content: 'alpha settings panel', rank: -2.0, type: 'decision' },
+        { title: 'Alpha cache', content: 'alpha cache layer', rank: -1.5, type: 'decision' },
+        { title: 'Beta notes', content: 'beta rollout plan', rank: -9.0, type: 'decision' },
+      ];
+      const http = await import('node:http');
+      const server = http.createServer((req, res) => {
+        const u = new URL(req.url || '/', 'http://localhost');
+        const q = (u.searchParams.get('q') || '').toLowerCase();
+        const terms = q.split(/\s+/).filter(Boolean);
+        const limit = parseInt(u.searchParams.get('limit') || '5', 10);
+        const hits = rows
+          .filter((r) => {
+            const hay = `${r.title} ${r.content}`.toLowerCase();
+            return terms.length > 0 && terms.every((t) => hay.includes(t));
+          })
+          .slice(0, limit);
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(hits));
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const addr = server.address();
+      const url = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+      try {
+        const results = await searchEngramMemory('alpha beta', {
+          limit: 2,
+          engramUrl: url,
+          project: 'fallback-starvation',
+        });
+        expect(results.length).toBe(2);
+        // Best row first despite matching only the second term.
+        expect(results[0].title).toBe('Beta notes');
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          server.close((e) => (e ? reject(e) : resolve())));
+      }
+    });
+
+    it('prefers rows matching more query terms regardless of per-term rank', async () => {
+      // Tiering is polarity-independent: 'Alpha beta bridge' matches 2 of 3
+      // terms, 'Alpha solo' matches 1 with a stronger single-term rank — the
+      // 2-term row must still win. The server returns ROWS order (A first),
+      // so only the merge can put B first.
+      const rows = [
+        { title: 'Alpha solo', content: 'alpha isolated note', rank: -9.0, type: 'decision' },
+        { title: 'Alpha beta bridge', content: 'alpha beta interop', rank: -2.0, type: 'decision' },
+      ];
+      const http = await import('node:http');
+      const andServer = http.createServer((req, res) => {
+        const u = new URL(req.url || '/', 'http://localhost');
+        const q = (u.searchParams.get('q') || '').toLowerCase();
+        const terms = q.split(/\s+/).filter(Boolean);
+        const limit = parseInt(u.searchParams.get('limit') || '5', 10);
+        const hits = rows
+          .filter((r) => {
+            const hay = `${r.title} ${r.content}`.toLowerCase();
+            return terms.length > 0 && terms.every((t) => hay.includes(t));
+          })
+          .slice(0, limit);
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(hits));
+      });
+      await new Promise<void>((resolve) => andServer.listen(0, '127.0.0.1', resolve));
+      const addr = andServer.address();
+      const url = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+      try {
+        const results = await searchEngramMemory('alpha beta gamma', {
+          limit: 1,
+          engramUrl: url,
+          project: 'fallback-tier',
+        });
+        expect(results.length).toBe(1);
+        expect(results[0].title).toBe('Alpha beta bridge');
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          andServer.close((e) => (e ? reject(e) : resolve())));
+      }
+    });
+
+    it('keeps partial results when one term fetch fails', async () => {
+      // A dead leg must not sink the whole merge: the alpha fetch hangs up,
+      // the beta leg still serves its rows.
+      const http = await import('node:http');
+      const server = http.createServer((req, res) => {
+        const u = new URL(req.url || '/', 'http://localhost');
+        const q = (u.searchParams.get('q') || '').toLowerCase();
+        if (q === 'alpha') {
+          req.socket.destroy();
+          return;
+        }
+        const rows = [{ title: 'Beta notes', content: 'beta rollout plan', rank: -2.0, type: 'decision' }];
+        const terms = q.split(/\s+/).filter(Boolean);
+        const hits = rows.filter((r) => {
+          const hay = `${r.title} ${r.content}`.toLowerCase();
+          return terms.length > 0 && terms.every((t) => hay.includes(t));
+        });
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(hits));
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const addr = server.address();
+      const url = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+      try {
+        const results = await searchEngramMemory('alpha beta', {
+          limit: 3,
+          engramUrl: url,
+          project: 'fallback-partial',
+        });
+        expect(results.some((r) => r.title === 'Beta notes')).toBe(true);
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          server.close((e) => (e ? reject(e) : resolve())));
+      }
     });
 
     it('strict results win over cached fallback once new data matches', async () => {

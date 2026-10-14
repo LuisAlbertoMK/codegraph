@@ -118,6 +118,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Searching project memory (`codegraph_memory_search` and `codegraph_explore_with_memory`) no longer risks answering from the wrong memory server: cached answers are now kept separate per server and result count, so switching servers — or losing the connection — can't keep showing stale insights.
 - Loading the symbols for Engram insight extraction now takes one database pass instead of four, and sampling a symbol's most-affected neighbors no longer copies thousands of entries to keep five — extraction does less work with identical results.
 - Project insights synced to Engram no longer list the symbol itself among its most-affected neighbors: that slot now names another affected symbol instead.
+- When a multi-word memory search matches nothing, the per-word fallback now fetches every word's matches in parallel and prefers rows matching more of the query, so the most relevant memory is no longer buried when the first word matches a lot.
+- Memory search results are now ordered strongest-match-first, matching the memory server's own ranking: the fallback previously listed the weakest matches first.
 
 ## [1.6.2] - 2026-10-03
 

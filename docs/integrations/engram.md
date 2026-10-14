@@ -99,7 +99,11 @@ Direct recall over persistent memory — no code flow. Pairs with `codegraph_exp
 **Memory search cache:** answers are cached per backend server, project,
 query and result count for 60 seconds, so repeated questions in a session
 don't hit Engram again. Strict misses fall back to per-term retrieval under
-its own cache entry, keeping fresh strict matches discoverable.
+its own cache entry, keeping fresh strict matches discoverable. The per-term
+fetches run in parallel and merge preferring rows that match more of the
+query (then strongest-match-first, following the server's own ranking:
+more negative rank wins), so a row only a later term matches is never
+starved by an earlier term's hits.
 
 ## Insight Extraction
 

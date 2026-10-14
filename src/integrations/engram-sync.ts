@@ -668,8 +668,16 @@ export async function searchEngramMemory(
 }
 
 /**
- * Per-term (OR) retrieval merged by score, used only on a strict-AND miss.
- * Bounded to `limit` rows: stops fetching once enough unique hits exist.
+ * Per-term (OR) retrieval, used only on a strict-AND miss. All single-term
+ * fetches run in parallel (independent HTTP round trips — serially they
+ * cost N× one trip), each fetching deeper than `limit` so the merge below —
+ * not the per-term cutoff — decides what survives. Rows are ranked by
+ * number of matched terms first (a row matching 2 of 3 terms outranks one
+ * matching 1), then by score; without this, the first term fills every slot
+ * and a row only the second term matches is never even fetched (starvation).
+ * Score polarity follows the server (FTS5 bm25: more negative = stronger
+ * match, best-first — verified live: multi-term strict hits rank more
+ * negative than any single-term hit): sort ascending. Bounded to `limit`.
  */
 async function fetchMemoryHitsOr(
   terms: string,
@@ -679,20 +687,33 @@ async function fetchMemoryHitsOr(
 ): Promise<EngramMemoryHit[]> {
   const singles = terms.split(/\s+/).filter((t) => t.length > 0);
   if (singles.length <= 1) return [];
-  const seen = new Set<string>();
-  const merged: EngramMemoryHit[] = [];
-  for (const single of singles) {
-    const hits = await fetchMemoryHits(single, limit, project, engramUrl);
+  // Depth per term comfortably above `limit` (never below 5): multi-match
+  // rows ranked low in one term's list still reach the merge.
+  const depth = Math.max(limit, 5);
+  const settled = await Promise.all(
+    singles.map((single) =>
+      fetchMemoryHits(single, depth, project, engramUrl).catch((): EngramMemoryHit[] => [])
+    )
+  );
+
+  const byKey = new Map<string, { hit: EngramMemoryHit; terms: number }>();
+  for (const hits of settled) {
     for (const h of hits) {
       const key = `${h.title}\n${h.content.slice(0, 160)}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        merged.push(h);
+      const entry = byKey.get(key);
+      if (entry) {
+        entry.terms += 1;
+        // Rank polarity follows the server (FTS5 bm25: more negative =
+        // stronger match): keep the row's strongest leg.
+        if (h.score < entry.hit.score) entry.hit = h;
+      } else {
+        byKey.set(key, { hit: h, terms: 1 });
       }
-      if (merged.length >= limit) break;
     }
-    if (merged.length >= limit) break;
   }
-  merged.sort((a, b) => b.score - a.score);
-  return merged.slice(0, limit);
+  // Term count first (polarity-independent), then strongest-match-first.
+  return [...byKey.values()]
+    .sort((a, b) => b.terms - a.terms || a.hit.score - b.hit.score)
+    .slice(0, limit)
+    .map((e) => e.hit);
 }
