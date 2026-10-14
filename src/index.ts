@@ -782,6 +782,12 @@ export class CodeGraph {
         // orchestrator's covers extraction alone, and the summary printed it
         // as the run's, leaving out resolution and linking (#2334).
         result.durationMs = Date.now() - startedAt;
+
+        // Post-index hook: sync insights to Engram (non-blocking, fire-and-forget)
+        if (process.env.CODEGRAPH_ENGRAM_ENABLED === '1') {
+          this.syncInsightsToEngram().catch(() => { /* never fail index over Engram */ });
+        }
+
         return result;
       } finally {
         // Restore the auto-checkpoint interval AFTER the fold-up above so the
@@ -1212,6 +1218,12 @@ export class CodeGraph {
         if (fullReconcile && result.filesChecked > 0) this.pendingFullReconcile = false;
         // The whole sync, as for indexAll: resolution and linking included (#2334).
         result.durationMs = Date.now() - startedAt;
+
+        // Post-index hook: sync insights to Engram (non-blocking, fire-and-forget)
+        if (process.env.CODEGRAPH_ENGRAM_ENABLED === '1') {
+          this.syncInsightsToEngram().catch(() => { /* never fail sync over Engram */ });
+        }
+
         return result;
       } finally {
         // Mirror indexAll's teardown: stop the valve, then restore the
@@ -1833,6 +1845,13 @@ export class CodeGraph {
   }
 
   /**
+   * Get all nodes of any of the given kinds in one query
+   */
+  getNodesByKinds(kinds: ReadonlyArray<Node['kind']>): Node[] {
+    return this.queries.getNodesByKinds(kinds);
+  }
+
+  /**
    * Get ALL nodes with an exact name (direct index lookup, not FTS-ranked/capped).
    * Used to enumerate every overload of a heavily-overloaded name so the specific
    * definition the caller wants is never dropped below a search cut.
@@ -2299,6 +2318,37 @@ export class CodeGraph {
   }
 
   /**
+   * Count nodes in the impact radius without materializing the Subgraph.
+   *
+   * Same walk as {@link getImpactRadius} (same gates and exclusions), returns
+   * only the reachable count. For ranking paths that never read the
+   * nodes/edges themselves.
+   *
+   * @param nodeId - ID of the node
+   * @param maxDepth - Maximum depth to traverse (default: 3)
+   * @returns Number of nodes in the impact radius (focal included)
+   */
+  getImpactRadiusCount(nodeId: string, maxDepth: number = 3): number {
+    return this.traverser.getImpactRadiusCount(nodeId, maxDepth);
+  }
+
+  /**
+   * Caller fan-in per target in one grouped scan (no per-node round trips).
+   * Identical numbers to getCallers(id, 1).length per node.
+   */
+  getCallerCounts(): Map<string, number> {
+    return this.traverser.getCallerCounts();
+  }
+
+  /**
+   * Impact membership as a level-synchronous BFS over batched queries.
+   * Same reachable set as {@link getImpactRadius} — ids only.
+   */
+  getImpactIdsBatched(nodeId: string, maxDepth: number = 3): Set<string> {
+    return this.traverser.getImpactIdsBatched(nodeId, maxDepth);
+  }
+
+  /**
    * Find the shortest path between two nodes
    *
    * @param fromId - Starting node ID
@@ -2414,6 +2464,40 @@ export class CodeGraph {
    */
   async getCode(nodeId: string): Promise<string | null> {
     return this.contextBuilder.getCode(nodeId);
+  }
+
+  /**
+   * Sync insights to Engram (persistent memory).
+   *
+   * Non-blocking: fire-and-forget from sync/index. Never throws.
+   * Extracts top symbols by centrality and persists them to Engram
+   * for cross-session recall.
+   */
+  async syncInsightsToEngram(): Promise<void> {
+    try {
+      const { extractInsights, syncInsightsToEngram: sync } = await import('./integrations/engram-sync');
+      const project = this.getProjectRoot().split(/[\\/]/).pop() || 'unknown';
+
+      console.log(`[codegraph] Extracting insights for Engram sync (project: ${project})...`);
+      const insights = await extractInsights(this, {
+        maxInsights: 30,
+        minCallers: 3,
+        minImpact: 5,
+        project,
+        includeFlows: true,
+      });
+
+      if (insights.length === 0) {
+        console.log('[codegraph] No insights to sync.');
+        return;
+      }
+
+      const result = await sync(insights, undefined, { rootDir: this.getProjectRoot() });
+      console.log(`[codegraph] Engram sync complete: ${result.created} created, ${result.updated} updated, ${result.skipped} unchanged, ${result.failed} failed.`);
+    } catch (err) {
+      // Never fail sync/index over Engram
+      console.error(`[codegraph] Engram sync failed: ${err}`);
+    }
   }
 
   /**

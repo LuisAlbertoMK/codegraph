@@ -1747,6 +1747,61 @@ export const tools: ToolDefinition[] = [
     _meta: { 'anthropic/alwaysLoad': true },
   },
   {
+    name: 'codegraph_explore_with_memory',
+    description: 'MEMORY-ENRICHED EXPLORE — same as codegraph_explore but automatically enriches results with relevant project memory from Engram (persistent memory). Use this when you want code flow + accumulated project context in one call. Gracefully degrades to normal explore if Engram is unavailable. Best for: understanding how code works in the context of past decisions, known patterns, and architectural insights.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Symbol names, file names, or short code terms to explore (same as codegraph_explore).',
+        },
+        maxFiles: {
+          type: 'number',
+          description: 'Maximum number of files to include source code from (default: 12)',
+          default: 12,
+        },
+        projectPath: projectPathProperty,
+        includeMemory: {
+          type: 'boolean',
+          description: 'Whether to enrich results with Engram memory (default: true). Set to false for raw explore.',
+          default: true,
+        },
+        project: {
+          type: 'string',
+          description: 'Engram project name (exact match). Defaults to the indexed project name when projectPath is given.',
+        },
+      },
+      required: ['query'],
+    },
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: 'codegraph_memory_search',
+    description: 'PROJECT MEMORY SEARCH — search persistent project memory (Engram) for past decisions, patterns, and architectural insights matching a query. No code flow — pair with codegraph_explore (or use codegraph_explore_with_memory for both in one call). Returns an empty list gracefully if Engram is unavailable.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'What to recall (symbol names, topics, or questions about past work).',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum memories to return (default: 5)',
+          default: 5,
+        },
+        project: {
+          type: 'string',
+          description: 'Engram project name (exact match). Defaults to the indexed project name when projectPath is given.',
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['query'],
+    },
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
     name: 'codegraph_status',
     description: 'Index health check: files, nodes, edges, last indexed time, and added/modified/removed counts. Skip unless debugging.',
     inputSchema: {
@@ -3009,6 +3064,8 @@ export class ToolHandler {
       case 'codegraph_callees': return await this.handleCallees(args);
       case 'codegraph_impact': return await this.handleImpact(args);
       case 'codegraph_explore': return await this.handleExplore(args);
+      case 'codegraph_explore_with_memory': return await this.handleExploreWithMemory(args);
+      case 'codegraph_memory_search': return await this.handleMemorySearch(args);
       case 'codegraph_node': return await this.handleNode(args);
       case 'codegraph_files': return await this.handleFiles(args);
       default: return this.errorResult(`Unknown tool: ${toolName}`);
@@ -7637,6 +7694,148 @@ export class ToolHandler {
       responseBytes: finalText.length,
     };
     return result;
+  }
+
+  /**
+   * Resolve the Engram project filter for memory tools: explicit `project`
+   * wins (exact Engram project name); otherwise derive it from `projectPath`
+   * the same way the post-index hook does (directory basename) — never pass
+   * a raw filesystem path as the filter, which matches nothing.
+   */
+  private resolveEngramProject(args: Record<string, unknown>): string | undefined {
+    const explicit = args.project as string | undefined;
+    if (explicit) return explicit;
+    const projectPath = args.projectPath as string | undefined;
+    return projectPath ? projectPath.split(/[\\/]/).filter(Boolean).pop() : undefined;
+  }
+
+  /**
+   * MEMORY-ENRICHED EXPLORE — same as handleExplore but enriches results
+   * with relevant project memory from Engram (persistent memory).
+   *
+   * Strategy:
+   * 1. Run normal explore and the Engram lookup CONCURRENTLY (they are
+   *    independent: the memory query needs only the raw query + project,
+   *    both known up front). Wall-clock is max(explore, memory), not the sum.
+   * 2. Prepend memory section to explore output
+   * 3. Gracefully degrade if Engram is unavailable
+   */
+  private async handleExploreWithMemory(args: Record<string, unknown>): Promise<ToolResult> {
+    const rawQuery = this.validateString(args.query, 'query');
+    if (typeof rawQuery !== 'string') return rawQuery;
+
+    // Check if memory enrichment is requested
+    const includeMemory = (args.includeMemory as boolean) ?? true;
+    if (!includeMemory) return this.handleExplore(args);
+
+    // Try to get memory from Engram (non-blocking, graceful degradation).
+    // Launched alongside explore: independent inputs, so no reason to serialize.
+    const project = this.resolveEngramProject(args);
+    const memoryPromise = (async () => {
+      try {
+        const { searchEngramMemory } = await import('../integrations/engram-sync');
+        return await searchEngramMemory(rawQuery, { limit: 3, project });
+      } catch {
+        return [];
+      }
+    })();
+
+    const [exploreResult, memory] = await Promise.all([
+      this.handleExplore(args),
+      // Deadline for the memory leg: a hung Engram settles the lookup only
+      // via fetch abort after the full fetch timeout (10s). Race it so a hang
+      // holds explore at most MEMORY_LEG_TIMEOUT_MS. Real memory hits measured
+      // <=2.4s, so 3s preserves them. memoryPromise never rejects (catches
+      // all), so the race loser settling late is harmless.
+      (() => {
+        const MEMORY_LEG_TIMEOUT_MS = 3000;
+        let legTimer: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<never[]>((resolve) => {
+          legTimer = setTimeout(() => resolve([]), MEMORY_LEG_TIMEOUT_MS);
+          (legTimer as unknown as { unref?: () => void }).unref?.();
+        });
+        return Promise.race([memoryPromise, deadline]).finally(() => clearTimeout(legTimer));
+      })(),
+    ]);
+
+    try {
+      if (memory.length === 0) return exploreResult;
+
+      // Build memory section
+      const memoryLines = [
+        '',
+        '---',
+        '**Project Memory (from Engram)**',
+        '',
+        ...memory.map((m) => `- **${m.title}** (${m.type}, score: ${m.score})\n  ${m.content.split('\n').slice(0, 3).join('\n  ')}`),
+        '',
+      ];
+
+      // Prepend memory to explore output
+      const exploreText = exploreResult.content?.[0]?.text || '';
+      const enrichedText = memoryLines.join('\n') + exploreText;
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: enrichedText,
+          },
+        ],
+        isError: false,
+      };
+    } catch {
+      // Graceful degradation: return normal explore if Engram fails
+      return exploreResult;
+    }
+  }
+
+  /**
+   * PROJECT MEMORY SEARCH — direct recall over Engram persistent memory.
+   * Together with codegraph_explore this removes the need for a second
+   * (Engram) MCP server: one codegraph MCP covers code + memory.
+   *
+   * Project resolution: explicit `project` wins (exact Engram project name).
+   * Otherwise derive it from `projectPath` the same way the post-index hook
+   * does (directory basename) — never pass a raw filesystem path as the
+   * filter, which matches nothing.
+   */
+  private async handleMemorySearch(args: Record<string, unknown>): Promise<ToolResult> {
+    const rawQuery = this.validateString(args.query, 'query');
+    if (typeof rawQuery !== 'string') return rawQuery;
+
+    const limit = typeof args.limit === 'number' && args.limit > 0
+      ? Math.min(Math.floor(args.limit), 50)
+      : 5;
+
+    const project = this.resolveEngramProject(args);
+
+    try {
+      const { searchEngramMemory } = await import('../integrations/engram-sync');
+      const memory = await searchEngramMemory(rawQuery, { limit, project });
+      const lines = memory.length === 0
+        ? ['No matching project memory found (nothing stored yet, or Engram is unreachable).']
+        : memory.map((m) => `- **${m.title}** (${m.type}, score: ${m.score})\n  ${m.content.split('\n').slice(0, 5).join('\n  ')}`);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: ['**Project Memory (from Engram)**', '', ...lines].join('\n'),
+          },
+        ],
+        isError: false,
+      };
+    } catch {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: 'Project memory unavailable (Engram not reachable).',
+          },
+        ],
+        isError: false,
+      };
+    }
   }
 
   /**

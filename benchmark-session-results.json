@@ -1,0 +1,35 @@
+{
+  "timestamp": "2026-10-12T16:49:19.887Z",
+  "repository": "Ford-MYCO",
+  "project_key": "reportes-myco",
+  "session_queries": 10,
+  "new_queries": 3,
+  "repeated_queries": 7,
+  "reps": 5,
+  "baseline": {
+    "median_ms": 686,
+    "runs": [
+      725,
+      686,
+      697,
+      624,
+      652
+    ]
+  },
+  "integrated": {
+    "median_ms": 468,
+    "runs": [
+      563,
+      468,
+      444,
+      441,
+      495
+    ]
+  },
+  "comparison": {
+    "time_savings_ms": 218,
+    "time_savings_pct": "31.8",
+    "baseline_per_query_ms": 69,
+    "integrated_per_query_ms": 47
+  }
+}

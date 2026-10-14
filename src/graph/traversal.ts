@@ -285,6 +285,15 @@ export class GraphTraverser {
     return result;
   }
 
+  /**
+   * Caller fan-in per target in one grouped scan. Identical numbers to
+   * getCallers(id, 1).length per node — for ranking passes over the corpus
+   * where per-node round trips dominate.
+   */
+  getCallerCounts(): Map<string, number> {
+    return this.queries.getCallerCounts();
+  }
+
   private getCallersRecursive(
     nodeId: string,
     maxDepth: number,
@@ -556,6 +565,151 @@ export class GraphTraverser {
       edges,
       roots: [nodeId],
     };
+  }
+
+  /**
+   * Count nodes in the impact radius WITHOUT materializing the Subgraph.
+   *
+   * Same walk as {@link getImpactRadius} — same depth gates (`enterAtDepth`,
+   * `nearerThanBefore`), same container expansion, same `contains` exclusion
+   * (#536, #1089) — but returns only the reachable node count (focal
+   * included). Ranking paths that never read the nodes/edges themselves
+   * avoid Map growth and Edge retention entirely.
+   *
+   * @param nodeId - ID of the focal node
+   * @param maxDepth - Maximum depth to traverse (default: 3)
+   * @returns Number of nodes in the impact radius (0 when the node is missing)
+   */
+  getImpactRadiusCount(nodeId: string, maxDepth: number = 3): number {
+    const focalNode = this.queries.getNodeById(nodeId);
+    if (!focalNode) {
+      return 0;
+    }
+
+    const counted = new Set<string>([nodeId]);
+    this.getImpactCountRecursive(nodeId, maxDepth, 0, counted, new Map(), new Set());
+    return counted.size;
+  }
+
+  /**
+   * Impact membership as a level-synchronous BFS over batched queries.
+   *
+   * Same reachable set as {@link getImpactRadius} — same depth gates, same
+   * container expansion, same `contains` exclusion (#536) — but a whole
+   * frontier level costs a constant handful of round trips (one incoming-edge
+   * batch, one node batch, one contains batch) instead of one query per node,
+   * so god-symbols stop being quadratic. Returns member ids only; pair with a
+   * tiny node fetch for names.
+   *
+   * First discovery is always at minimal depth (levels drain in order), which
+   * reproduces the nearer-before re-expansion outcomes for membership.
+   */
+  getImpactIdsBatched(nodeId: string, maxDepth: number = 3): Set<string> {
+    const focal = this.queries.getNodeById(nodeId);
+    if (!focal) return new Set();
+    const containerKinds = new Set(['class', 'interface', 'struct', 'union', 'trait', 'protocol', 'module', 'enum']);
+    const seen = new Set<string>([nodeId]);
+    const depthOf = new Map<string, number>([[nodeId, 0]]);
+    // Kind cache across levels: each node row is fetched once.
+    const kindCache = new Map<string, Node>();
+    const kindOf = (ids: string[]): void => {
+      const fresh = ids.filter((id) => !kindCache.has(id));
+      if (fresh.length === 0) return;
+      for (const [id, n] of this.queries.getNodesByIds(fresh)) kindCache.set(id, n);
+    };
+    let frontier = [nodeId];
+    let depth = 0;
+    while (frontier.length > 0 && depth < maxDepth) {
+      // Same-depth container cascade to FIXPOINT (mirrors unbounded same-depth
+      // recursion): children join this level and nested containers cascade
+      // further; their dependents all count at depth + 1. Single-pass only
+      // reaches one nesting level (#nested-container parity).
+      kindOf(frontier);
+      let pending = [...frontier];
+      for (;;) {
+        const containers = pending.filter((id) => {
+          const n = kindCache.get(id);
+          return n !== undefined && containerKinds.has(n.kind);
+        });
+        if (containers.length === 0) break;
+        const containsEdges = this.queries.getOutgoingEdgesFrom(containers, ['contains']);
+        pending = [];
+        for (const e of containsEdges) {
+          if (!depthOf.has(e.target)) {
+            depthOf.set(e.target, depth);
+            seen.add(e.target);
+            frontier.push(e.target);
+            pending.push(e.target);
+          }
+        }
+        kindOf(pending);
+      }
+      // Dependents of the whole level in one batch (minus `contains`, #536).
+      const incoming = this.queries.getIncomingEdgesTo(frontier).filter((e) => e.kind !== 'contains');
+      const next: string[] = [];
+      for (const e of incoming) {
+        if (!depthOf.has(e.source)) {
+          depthOf.set(e.source, depth + 1);
+          seen.add(e.source);
+          next.push(e.source);
+        }
+      }
+      frontier = next;
+      depth++;
+    }
+    return seen;
+  }
+
+  private getImpactCountRecursive(
+    nodeId: string,
+    maxDepth: number,
+    currentDepth: number,
+    counted: Set<string>,
+    visited: Map<string, number>,
+    expanded: Set<string>
+  ): void {
+    // Same gates as getImpactRecursive.
+    if (!this.enterAtDepth(visited, nodeId, currentDepth)) return;
+    if (currentDepth >= maxDepth) {
+      return;
+    }
+    // `expanded` only gated edge retention in getImpactRecursive (no edges
+    // here), but keep tracking it so re-expansion behavior stays identical.
+    expanded.add(nodeId);
+
+    // Container expansion (mirrors getImpactRecursive): callers of contained
+    // members count toward the container. Membership-only: neighbor ids come
+    // from the edge rows, existence is probed without decoding Node rows.
+    const focalNode = this.queries.getNodeById(nodeId);
+    if (focalNode) {
+      const containerKinds = new Set(['class', 'interface', 'struct', 'union', 'trait', 'protocol', 'module', 'enum']);
+      if (containerKinds.has(focalNode.kind)) {
+        const containsEdges = this.queries.getOutgoingEdges(nodeId, ['contains']);
+        if (containsEdges.length > 0) {
+          const existing = this.queries.filterExistingNodeIds(containsEdges.map((e) => e.target));
+          for (const edge of containsEdges) {
+            if (existing.has(edge.target) && this.nearerThanBefore(visited, edge.target, currentDepth)) {
+              counted.add(edge.target);
+              // Recurse into children at the same depth (part of the same symbol)
+              this.getImpactCountRecursive(edge.target, maxDepth, currentDepth, counted, visited, expanded);
+            }
+          }
+        }
+      }
+    }
+
+    // Incoming dependents, excluding `contains` (#536).
+    const incomingEdges = this.queries.getIncomingEdges(nodeId).filter((e) => e.kind !== 'contains');
+    if (incomingEdges.length === 0) return;
+    const existingSources = this.queries.filterExistingNodeIds(incomingEdges.map((e) => e.source));
+
+    for (const edge of incomingEdges) {
+      if (!existingSources.has(edge.source)) continue;
+      if (this.nearerThanBefore(visited, edge.source, currentDepth + 1)) {
+        counted.add(edge.source);
+        this.getImpactCountRecursive(edge.source, maxDepth, currentDepth + 1, counted, visited, expanded);
+      }
+    }
   }
 
   private getImpactRecursive(

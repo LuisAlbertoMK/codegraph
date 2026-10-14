@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-10-12T17:06:15.917Z",
+  "projects_tested": 1,
+  "queries_per_project": 10,
+  "reps": 3,
+  "results": [
+    {
+      "project": "Ford-MYCO",
+      "projectKey": "reportes-myco",
+      "baseline_ms": 2757,
+      "integrated_ms": 2574,
+      "savings_ms": 183,
+      "savings_pct": "6.6",
+      "baseline_per_query_ms": 276,
+      "integrated_per_query_ms": 257
+    }
+  ],
+  "average_savings_pct": "6.6"
+}

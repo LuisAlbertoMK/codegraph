@@ -1,0 +1,86 @@
+{
+  "timestamp": "2026-10-12T16:21:10.394Z",
+  "node_version": "v26.11.1",
+  "platform": "win32",
+  "test_project": {
+    "files": 8,
+    "symbols": "multiple classes, interfaces, functions"
+  },
+  "queries_tested": 5,
+  "reps_per_query": 5,
+  "comparison": [
+    {
+      "name": "single-symbol",
+      "description": "Single symbol lookup",
+      "query": "AuthService",
+      "baseline_ms": 57,
+      "memory_ms": 53,
+      "overhead_ms": -4,
+      "overhead_pct": "-7.0",
+      "baseline_chars": 5963,
+      "memory_chars": 6616,
+      "chars_diff": 653,
+      "has_memory": true
+    },
+    {
+      "name": "flow-explore",
+      "description": "Flow exploration",
+      "query": "UserController handleLogin",
+      "baseline_ms": 88,
+      "memory_ms": 71,
+      "overhead_ms": -17,
+      "overhead_pct": "-19.3",
+      "baseline_chars": 6060,
+      "memory_chars": 6060,
+      "chars_diff": 0,
+      "has_memory": false
+    },
+    {
+      "name": "multi-symbol",
+      "description": "Multi-symbol query",
+      "query": "AuthService UserService UserController",
+      "baseline_ms": 89,
+      "memory_ms": 78,
+      "overhead_ms": -11,
+      "overhead_pct": "-12.4",
+      "baseline_chars": 6390,
+      "memory_chars": 7043,
+      "chars_diff": 653,
+      "has_memory": true
+    },
+    {
+      "name": "callers",
+      "description": "Find callers of login",
+      "query": "login",
+      "baseline_ms": 37,
+      "memory_ms": 29,
+      "overhead_ms": -8,
+      "overhead_pct": "-21.6",
+      "baseline_chars": 5524,
+      "memory_chars": 5744,
+      "chars_diff": 220,
+      "has_memory": true
+    },
+    {
+      "name": "impact",
+      "description": "Impact analysis",
+      "query": "AuthService",
+      "baseline_ms": 48,
+      "memory_ms": 39,
+      "overhead_ms": -9,
+      "overhead_pct": "-18.8",
+      "baseline_chars": 5963,
+      "memory_chars": 6616,
+      "chars_diff": 653,
+      "has_memory": true
+    }
+  ],
+  "summary": {
+    "avg_baseline_ms": 64,
+    "avg_memory_ms": 54,
+    "avg_overhead_pct": -16,
+    "avg_chars_diff": 436,
+    "queries_with_memory": 4,
+    "total_queries": 5
+  }
+}

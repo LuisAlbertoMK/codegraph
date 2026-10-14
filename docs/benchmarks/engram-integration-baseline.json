@@ -1,0 +1,180 @@
+{
+  "timestamp": "2026-10-12T16:10:29.347Z",
+  "repo": "codegraph",
+  "commit": "af64eb8",
+  "branch": "feature/codegraph-engram-integration",
+  "node_version": "v26.11.1",
+  "platform": "win32",
+  "results": [
+    {
+      "name": "single-symbol",
+      "query": "CodeGraph.indexAll",
+      "median_elapsed_ms": 105,
+      "median_chars": 0,
+      "median_symbols": 0,
+      "runs": [
+        {
+          "elapsed_ms": 105,
+          "chars": 0,
+          "symbols_found": 0,
+          "files_found": 0,
+          "success": false,
+          "error": "Command failed: node dist/bin/codegraph.js explore \"CodeGraph.indexAll\"\n------------------------------------------------------------------------\n[CodeGraph] Unsupported Node.js version: 26.11.1\n------"
+        },
+        {
+          "elapsed_ms": 107,
+          "chars": 0,
+          "symbols_found": 0,
+          "files_found": 0,
+          "success": false,
+          "error": "Command failed: node dist/bin/codegraph.js explore \"CodeGraph.indexAll\"\n------------------------------------------------------------------------\n[CodeGraph] Unsupported Node.js version: 26.11.1\n------"
+        },
+        {
+          "elapsed_ms": 104,
+          "chars": 0,
+          "symbols_found": 0,
+          "files_found": 0,
+          "success": false,
+          "error": "Command failed: node dist/bin/codegraph.js explore \"CodeGraph.indexAll\"\n------------------------------------------------------------------------\n[CodeGraph] Unsupported Node.js version: 26.11.1\n------"
+        }
+      ]
+    },
+    {
+      "name": "flow-explore",
+      "query": "CodeGraph sync indexAll",
+      "median_elapsed_ms": 109,
+      "median_chars": 0,
+      "median_symbols": 0,
+      "runs": [
+        {
+          "elapsed_ms": 125,
+          "chars": 0,
+          "symbols_found": 0,
+          "files_found": 0,
+          "success": false,
+          "error": "Command failed: node dist/bin/codegraph.js explore \"CodeGraph sync indexAll\"\n------------------------------------------------------------------------\n[CodeGraph] Unsupported Node.js version: 26.11.1\n-"
+        },
+        {
+          "elapsed_ms": 108,
+          "chars": 0,
+          "symbols_found": 0,
+          "files_found": 0,
+          "success": false,
+          "error": "Command failed: node dist/bin/codegraph.js explore \"CodeGraph sync indexAll\"\n------------------------------------------------------------------------\n[CodeGraph] Unsupported Node.js version: 26.11.1\n-"
+        },
+        {
+          "elapsed_ms": 109,
+          "chars": 0,
+          "symbols_found": 0,
+          "files_found": 0,
+          "success": false,
+          "error": "Command failed: node dist/bin/codegraph.js explore \"CodeGraph sync indexAll\"\n------------------------------------------------------------------------\n[CodeGraph] Unsupported Node.js version: 26.11.1\n-"
+        }
+      ]
+    },
+    {
+      "name": "multi-symbol",
+      "query": "ExtractionOrchestrator parseFile resolveReferences",
+      "median_elapsed_ms": 107,
+      "median_chars": 0,
+      "median_symbols": 0,
+      "runs": [
+        {
+          "elapsed_ms": 107,
+          "chars": 0,
+          "symbols_found": 0,
+          "files_found": 0,
+          "success": false,
+          "error": "Command failed: node dist/bin/codegraph.js explore \"ExtractionOrchestrator parseFile resolveReferences\"\n------------------------------------------------------------------------\n[CodeGraph] Unsupported"
+        },
+        {
+          "elapsed_ms": 107,
+          "chars": 0,
+          "symbols_found": 0,
+          "files_found": 0,
+          "success": false,
+          "error": "Command failed: node dist/bin/codegraph.js explore \"ExtractionOrchestrator parseFile resolveReferences\"\n------------------------------------------------------------------------\n[CodeGraph] Unsupported"
+        },
+        {
+          "elapsed_ms": 104,
+          "chars": 0,
+          "symbols_found": 0,
+          "files_found": 0,
+          "success": false,
+          "error": "Command failed: node dist/bin/codegraph.js explore \"ExtractionOrchestrator parseFile resolveReferences\"\n------------------------------------------------------------------------\n[CodeGraph] Unsupported"
+        }
+      ]
+    },
+    {
+      "name": "callers",
+      "query": "ReferenceResolver",
+      "median_elapsed_ms": 104,
+      "median_chars": 0,
+      "median_symbols": 0,
+      "runs": [
+        {
+          "elapsed_ms": 108,
+          "chars": 0,
+          "symbols_found": 0,
+          "files_found": 0,
+          "success": false,
+          "error": "Command failed: node dist/bin/codegraph.js explore \"ReferenceResolver\"\n------------------------------------------------------------------------\n[CodeGraph] Unsupported Node.js version: 26.11.1\n-------"
+        },
+        {
+          "elapsed_ms": 102,
+          "chars": 0,
+          "symbols_found": 0,
+          "files_found": 0,
+          "success": false,
+          "error": "Command failed: node dist/bin/codegraph.js explore \"ReferenceResolver\"\n------------------------------------------------------------------------\n[CodeGraph] Unsupported Node.js version: 26.11.1\n-------"
+        },
+        {
+          "elapsed_ms": 104,
+          "chars": 0,
+          "symbols_found": 0,
+          "files_found": 0,
+          "success": false,
+          "error": "Command failed: node dist/bin/codegraph.js explore \"ReferenceResolver\"\n------------------------------------------------------------------------\n[CodeGraph] Unsupported Node.js version: 26.11.1\n-------"
+        }
+      ]
+    },
+    {
+      "name": "impact",
+      "query": "GraphTraverser",
+      "median_elapsed_ms": 104,
+      "median_chars": 0,
+      "median_symbols": 0,
+      "runs": [
+        {
+          "elapsed_ms": 110,
+          "chars": 0,
+          "symbols_found": 0,
+          "files_found": 0,
+          "success": false,
+          "error": "Command failed: node dist/bin/codegraph.js explore \"GraphTraverser\"\n------------------------------------------------------------------------\n[CodeGraph] Unsupported Node.js version: 26.11.1\n----------"
+        },
+        {
+          "elapsed_ms": 102,
+          "chars": 0,
+          "symbols_found": 0,
+          "files_found": 0,
+          "success": false,
+          "error": "Command failed: node dist/bin/codegraph.js explore \"GraphTraverser\"\n------------------------------------------------------------------------\n[CodeGraph] Unsupported Node.js version: 26.11.1\n----------"
+        },
+        {
+          "elapsed_ms": 104,
+          "chars": 0,
+          "symbols_found": 0,
+          "files_found": 0,
+          "success": false,
+          "error": "Command failed: node dist/bin/codegraph.js explore \"GraphTraverser\"\n------------------------------------------------------------------------\n[CodeGraph] Unsupported Node.js version: 26.11.1\n----------"
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "total_queries": 5,
+    "avg_elapsed_ms": 106,
+    "total_chars": 0
+  }
+}

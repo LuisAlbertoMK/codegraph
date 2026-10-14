@@ -1,0 +1,114 @@
+{
+  "timestamp": "2026-10-12T16:28:00.750Z",
+  "repository": "Ford-MYCO",
+  "query": "authentication login",
+  "reps": 10,
+  "baseline": {
+    "median_ms": 88,
+    "median_chars": 18362,
+    "runs": [
+      {
+        "ms": 92,
+        "chars": 18362
+      },
+      {
+        "ms": 105,
+        "chars": 18362
+      },
+      {
+        "ms": 85,
+        "chars": 18362
+      },
+      {
+        "ms": 113,
+        "chars": 18362
+      },
+      {
+        "ms": 94,
+        "chars": 18362
+      },
+      {
+        "ms": 88,
+        "chars": 18362
+      },
+      {
+        "ms": 86,
+        "chars": 18362
+      },
+      {
+        "ms": 85,
+        "chars": 18362
+      },
+      {
+        "ms": 82,
+        "chars": 18362
+      },
+      {
+        "ms": 81,
+        "chars": 18362
+      }
+    ]
+  },
+  "with_engram": {
+    "median_ms": 77,
+    "median_chars": 18362,
+    "runs": [
+      {
+        "ms": 94,
+        "chars": 18362,
+        "hasMemory": false
+      },
+      {
+        "ms": 105,
+        "chars": 18362,
+        "hasMemory": false
+      },
+      {
+        "ms": 86,
+        "chars": 18362,
+        "hasMemory": false
+      },
+      {
+        "ms": 82,
+        "chars": 18362,
+        "hasMemory": false
+      },
+      {
+        "ms": 77,
+        "chars": 18362,
+        "hasMemory": false
+      },
+      {
+        "ms": 74,
+        "chars": 18362,
+        "hasMemory": false
+      },
+      {
+        "ms": 76,
+        "chars": 18362,
+        "hasMemory": false
+      },
+      {
+        "ms": 70,
+        "chars": 18362,
+        "hasMemory": false
+      },
+      {
+        "ms": 69,
+        "chars": 18362,
+        "hasMemory": false
+      },
+      {
+        "ms": 68,
+        "chars": 18362,
+        "hasMemory": false
+      }
+    ]
+  },
+  "comparison": {
+    "overhead_ms": -11,
+    "overhead_pct": "-12.5",
+    "chars_diff": 0,
+    "memory_enrichment": "0/10"
+  }
+}
