@@ -298,7 +298,7 @@ function syncSessionIdFor(project: string): string {
 async function ensureSyncSession(engramUrl: string, project: string): Promise<string> {
   const sessionId = syncSessionIdFor(project);
   try {
-    await fetchWithTimeout(`${engramUrl}/sessions`, {
+    await fetchWithRetry(`${engramUrl}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: sessionId, project }),
@@ -311,6 +311,9 @@ async function ensureSyncSession(engramUrl: string, project: string): Promise<st
  * Engram HTTP timeout (ms). A hung Engram (socket accepted, never responds)
  * must never stall the fire-and-forget post-index chain — it only delays
  * background memory, never indexing. Override with ENGRAM_TIMEOUT_MS.
+ *
+ * This is also the RETRY BUDGET: retries share this same window, so retrying
+ * a flaky Engram can never make a dead one slower than one attempt already was.
  */
 function getEngramTimeoutMs(): number {
   const raw = parseInt(process.env.ENGRAM_TIMEOUT_MS || '10000', 10);
@@ -326,6 +329,76 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs?:
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Total attempts per Engram request (first try + retries). Override with
+ * ENGRAM_RETRY_ATTEMPTS; 1 disables retrying.
+ */
+function getEngramRetryAttempts(): number {
+  const raw = parseInt(process.env.ENGRAM_RETRY_ATTEMPTS || '3', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 3;
+}
+
+/**
+ * Worth retrying? The server's own failure (5xx) or rate limiting (429).
+ * A 4xx is a client error — the same request fails the same way, so it is
+ * handed back to the caller untouched instead of burning the budget.
+ */
+function isRetryableStatus(status: number): boolean {
+  return status >= 500 || status === 429;
+}
+
+const RETRY_BASE_DELAY_MS = 100;
+const RETRY_MAX_DELAY_MS = 500;
+
+/** Full jitter under the exponential ceiling — the 8 sync lanes must not retry in lockstep. */
+function retryDelayMs(attempt: number): number {
+  const ceiling = Math.min(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1), RETRY_MAX_DELAY_MS);
+  return Math.round(Math.random() * ceiling);
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Fetch with bounded retries that spend ONE `ENGRAM_TIMEOUT_MS` window in
+ * total, never more. The per-attempt timeout is capped by what is LEFT of the
+ * window, so a hung Engram still gives up exactly when a single un-retried
+ * attempt did — retrying a flaky Engram adds resilience without ever making a
+ * dead one slower (a hung server still sees exactly one request).
+ *
+ * The POSTs are safe to repeat: Engram upserts on `deduplication_key`, so a
+ * retry after a timeout that the server actually processed updates the same
+ * observation instead of creating a second one.
+ *
+ * The final attempt's response or error is returned/thrown unchanged, so every
+ * caller keeps its existing `!response.ok` and try/catch handling.
+ */
+async function fetchWithRetry(url: string, init: RequestInit = {}): Promise<Response> {
+  const attempts = getEngramRetryAttempts();
+  const budgetMs = getEngramTimeoutMs();
+  const startedAt = Date.now();
+  let lastError: unknown;
+
+  for (let attempt = 1; ; attempt++) {
+    const remaining = budgetMs - (Date.now() - startedAt);
+    if (remaining <= 0) break;
+
+    try {
+      const response = await fetchWithTimeout(url, init, remaining);
+      if (!isRetryableStatus(response.status)) return response;
+      lastError = new Error(`Engram responded ${response.status}`);
+    } catch (err) {
+      lastError = err;
+    }
+
+    if (attempt >= attempts) break;
+    const delay = retryDelayMs(attempt);
+    if (Date.now() - startedAt + delay >= budgetMs) break; // no room for another try
+    await sleep(delay);
+  }
+
+  throw lastError ?? new Error('Engram request failed');
 }
 
 /**
@@ -393,7 +466,7 @@ export async function syncInsightsToEngram(
 
   const posted = await mapWithConcurrency(toPost, SYNC_CONCURRENCY, async (insight): Promise<Posted> => {
     try {
-      const response = await fetchWithTimeout(`${engramUrl}/observations`, {
+      const response = await fetchWithRetry(`${engramUrl}/observations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -446,7 +519,7 @@ export async function syncInsightsToEngram(
     const p = posted[i];
     if (!p || !p.ok) return { created: false, key: null as string | null, id: null as number | string | null };
     try {
-      const current = (await (await fetchWithTimeout(`${engramUrl}/observations/${p.id}`)).json()) as { revision_count?: number; duplicate_count?: number };
+      const current = (await (await fetchWithRetry(`${engramUrl}/observations/${p.id}`)).json()) as { revision_count?: number; duplicate_count?: number };
       const created = (current.revision_count ?? 1) <= 1 && (current.duplicate_count ?? 0) === 0;
       return { created, key: p.key as string, id: p.id as number | string };
     } catch {
@@ -566,7 +639,7 @@ export async function searchEngramMemory(
     const params = new URLSearchParams({ q: memoryQueryTerms(query), limit: String(limit) });
     if (project) params.set('project', project);
 
-    const response = await fetchWithTimeout(`${engramUrl}/search?${params}`);
+    const response = await fetchWithRetry(`${engramUrl}/search?${params}`);
     if (!response.ok) return [];
 
     // Real API returns a bare array of observations (rank doubles as score).

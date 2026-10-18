@@ -33,7 +33,8 @@ Set the environment variable before running CodeGraph:
 ```bash
 export CODEGRAPH_ENGRAM_ENABLED=1
 export ENGRAM_URL=http://127.0.0.1:7437  # Engram HTTP API URL (engram serve default port)
-export ENGRAM_TIMEOUT_MS=10000  # Engram HTTP timeout in ms (default: 10000)
+export ENGRAM_TIMEOUT_MS=10000  # Engram HTTP timeout in ms (default: 10000) — also the retry budget
+export ENGRAM_RETRY_ATTEMPTS=3  # total attempts per request (default: 3; 1 disables retrying)
 export CODEGRAPH_MCP_TOOLS=explore,memory_search,explore_with_memory  # expose memory tools (default: explore only)
 ```
 
@@ -198,6 +199,10 @@ If Engram is unavailable:
 - `explore_with_memory` returns normal explore results
 - Post-index sync logs the error but doesn't fail
 - All functionality works without Engram
+
+### Retries
+
+A transient failure is retried within the SAME `ENGRAM_TIMEOUT_MS` window — a dropped connection, a server error (5xx), or rate limiting (429). The per-attempt timeout is capped by what is left of the window, so retrying can never make a dead Engram slower: a hung server still issues exactly one request and gives up at `ENGRAM_TIMEOUT_MS`. A 4xx is never retried (the same request fails the same way). Repeated POSTs are safe because Engram upserts on the insight's deduplication key. Tune with `ENGRAM_RETRY_ATTEMPTS` (default 3, backoff 100ms→500ms with full jitter).
 
 ## Future Work
 

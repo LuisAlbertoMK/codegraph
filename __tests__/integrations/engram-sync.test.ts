@@ -108,6 +108,57 @@ function startHangingServer(): Promise<{ url: string; close: () => void }> {
   });
 }
 
+/**
+ * A server that answers with a scripted status/body and COUNTS the requests it
+ * received — the only way to prove how many attempts the retry actually made.
+ */
+function startScriptedServer(
+  respond: (count: number) => { status: number; body?: string }
+): Promise<{ url: string; count: () => number; close: () => void }> {
+  return new Promise((resolve) => {
+    let requests = 0;
+    const server = http.createServer((req, res) => {
+      requests++;
+      req.on('data', () => { /* drain */ });
+      req.on('end', () => {
+        const { status, body } = respond(requests);
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(body ?? '');
+      });
+    });
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as AddressInfo).port;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        count: () => requests,
+        close: () => {
+          server.closeAllConnections();
+          server.close();
+        },
+      });
+    });
+  });
+}
+
+/** Hanging server that also counts how many requests it swallowed. */
+function startCountingHangingServer(): Promise<{ url: string; count: () => number; close: () => void }> {
+  return new Promise((resolve) => {
+    let requests = 0;
+    const server = http.createServer(() => { requests++; /* accept, never respond */ });
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as AddressInfo).port;
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        count: () => requests,
+        close: () => {
+          server.closeAllConnections();
+          server.close();
+        },
+      });
+    });
+  });
+}
+
 const MINIMAL_INSIGHT: CodeGraphInsight = {
   deduplication_key: 'codegraph:test:Foo',
   title: 'Foo',
@@ -601,6 +652,79 @@ end
       } finally {
         delete process.env.ENGRAM_TIMEOUT_MS;
         hanging.close();
+      }
+    });
+  });
+
+  // =========================================================================
+  // Retries: transient failures only, bounded by ONE timeout window
+  // =========================================================================
+
+  describe('retries', () => {
+    it('retries a 5xx and then succeeds', async () => {
+      const server = await startScriptedServer((count) =>
+        count < 3
+          ? { status: 503 }
+          : { status: 200, body: JSON.stringify([{ title: 'AuthService', content: 'x', rank: 1, type: 'decision' }]) }
+      );
+      try {
+        const results = await searchEngramMemory('AuthService', { engramUrl: server.url });
+        expect(results.map((r) => r.title)).toEqual(['AuthService']);
+        expect(server.count()).toBe(3);
+      } finally {
+        server.close();
+      }
+    });
+
+    it('does not retry a 4xx — a client error is returned untouched', async () => {
+      const server = await startScriptedServer(() => ({ status: 400, body: 'bad request' }));
+      try {
+        const results = await searchEngramMemory('AuthService', { engramUrl: server.url });
+        expect(results).toEqual([]);
+        expect(server.count()).toBe(1);
+      } finally {
+        server.close();
+      }
+    });
+
+    it('gives up after ENGRAM_RETRY_ATTEMPTS when every attempt fails', async () => {
+      const server = await startScriptedServer(() => ({ status: 503 }));
+      try {
+        const results = await searchEngramMemory('AuthService', { engramUrl: server.url });
+        expect(results).toEqual([]);
+        expect(server.count()).toBe(3);
+      } finally {
+        server.close();
+      }
+    });
+
+    it('ENGRAM_RETRY_ATTEMPTS=1 disables retrying', async () => {
+      const server = await startScriptedServer(() => ({ status: 503 }));
+      process.env.ENGRAM_RETRY_ATTEMPTS = '1';
+      try {
+        await searchEngramMemory('AuthService', { engramUrl: server.url });
+        expect(server.count()).toBe(1);
+      } finally {
+        delete process.env.ENGRAM_RETRY_ATTEMPTS;
+        server.close();
+      }
+    });
+
+    // The invariant that keeps retrying honest: the per-attempt timeout is
+    // capped by what is LEFT of the window, so a hung Engram exhausts the whole
+    // budget on its first attempt and gets exactly one request — never three.
+    it('a hung Engram still sees exactly one request (retry never multiplies the stall)', async () => {
+      const server = await startCountingHangingServer();
+      process.env.ENGRAM_TIMEOUT_MS = '300';
+      try {
+        const start = Date.now();
+        const results = await searchEngramMemory('AuthService', { engramUrl: server.url });
+        expect(results).toEqual([]);
+        expect(server.count()).toBe(1);
+        expect(Date.now() - start).toBeLessThan(8000);
+      } finally {
+        delete process.env.ENGRAM_TIMEOUT_MS;
+        server.close();
       }
     });
   });
