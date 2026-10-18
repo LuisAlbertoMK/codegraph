@@ -45,6 +45,12 @@ npm-debug.log*
 .claude/scheduled_tasks.lock
 .claude/handoffs/
 
+# Local opencode config at the repo root — it carries a machine-specific
+# absolute path to dist/bin/codegraph.js (the installer writes the real one
+# per machine, see src/installer/targets/opencode.ts), so it must not ship.
+/opencode.jsonc
+/opencode.json
+
 # Parallels Windows VM SSH/connection config (local machine, see CLAUDE.md)
 .parallels
 
