@@ -367,14 +367,21 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  * attempt did — retrying a flaky Engram adds resilience without ever making a
  * dead one slower (a hung server still sees exactly one request).
  *
+ * `init` is REPLAYED on every attempt. That is only safe because every caller
+ * sends a `JSON.stringify(...)` string body; a stream or `FormData` body would
+ * already be consumed by the failed attempt and must not be retried this way.
+ *
  * The POSTs are safe to repeat: Engram upserts on `deduplication_key`, so a
  * retry after a timeout that the server actually processed updates the same
  * observation instead of creating a second one.
  *
+ * `onRetry`, when given, fires once per retry (before the delay) so a caller
+ * can report that its request took more than one attempt.
+ *
  * The final attempt's response or error is returned/thrown unchanged, so every
  * caller keeps its existing `!response.ok` and try/catch handling.
  */
-async function fetchWithRetry(url: string, init: RequestInit = {}): Promise<Response> {
+async function fetchWithRetry(url: string, init: RequestInit = {}, onRetry?: () => void): Promise<Response> {
   const attempts = getEngramRetryAttempts();
   const budgetMs = getEngramTimeoutMs();
   const startedAt = Date.now();
@@ -395,6 +402,7 @@ async function fetchWithRetry(url: string, init: RequestInit = {}): Promise<Resp
     if (attempt >= attempts) break;
     const delay = retryDelayMs(attempt);
     if (Date.now() - startedAt + delay >= budgetMs) break; // no room for another try
+    onRetry?.();
     await sleep(delay);
   }
 
@@ -436,8 +444,8 @@ export async function syncInsightsToEngram(
   insights: CodeGraphInsight[],
   engramUrl: string = process.env.ENGRAM_URL || 'http://127.0.0.1:7437',
   options: { rootDir?: string } = {}
-): Promise<{ created: number; updated: number; failed: number; skipped: number }> {
-  const result = { created: 0, updated: 0, failed: 0, skipped: 0 };
+): Promise<{ created: number; updated: number; failed: number; skipped: number; retried: number }> {
+  const result = { created: 0, updated: 0, failed: 0, skipped: 0, retried: 0 };
   if (insights.length === 0) return result;
 
   const project = insights[0]?.project || 'codegraph';
@@ -462,10 +470,11 @@ export async function syncInsightsToEngram(
 
   type Posted =
     | { ok: false }
-    | { ok: true; id: number | string; key: string };
+    | { ok: true; id: number | string; key: string; retried: boolean };
 
   const posted = await mapWithConcurrency(toPost, SYNC_CONCURRENCY, async (insight): Promise<Posted> => {
     try {
+      let retried = false;
       const response = await fetchWithRetry(`${engramUrl}/observations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -488,7 +497,7 @@ export async function syncInsightsToEngram(
             source: 'codegraph',
           },
         }),
-      });
+      }, () => { retried = true; });
 
       if (!response.ok) {
         console.error(`[engram-sync] Failed to sync insight ${insight.deduplication_key}: ${response.status}`);
@@ -496,7 +505,7 @@ export async function syncInsightsToEngram(
       }
       const data = (await response.json()) as { id?: number | string };
       if (data.id === undefined) return { ok: false };
-      return { ok: true, id: data.id, key: insight.deduplication_key };
+      return { ok: true, id: data.id, key: insight.deduplication_key, retried };
     } catch (err) {
       console.error(`[engram-sync] Error syncing insight ${insight.deduplication_key}: ${err}`);
       return { ok: false };
@@ -506,6 +515,10 @@ export async function syncInsightsToEngram(
   // Same deduplication key upserts the same id: first revision counts as
   // created, later ones as updated. Revision lookup only for ids never seen
   // (plus in-run first-seen); state-known keys count as updated directly.
+  // Caveat surfaced by `retried` below: a first-seen POST that the server had
+  // already processed before our attempt timed out reads back as
+  // revision_count >= 2, so it lands in `updated`, not `created`. The data is
+  // right (one observation, upserted); only the created/updated split drifts.
   const runtimeSeen = new Map(state);
   const checkIdx: number[] = [];
   let updatedKnown = 0;
@@ -534,6 +547,10 @@ export async function syncInsightsToEngram(
   }
   result.updated += updatedKnown;
   result.failed = posted.filter((p) => !p.ok).length;
+  // Transparency, not a third outcome: how many POSTs needed more than one
+  // attempt, so a reader of the counts knows the created/updated split may
+  // have drifted (see the caveat above).
+  result.retried = posted.filter((p) => p.ok && p.retried).length;
   // Record hashes for everything posted OK (plus keep skipped entries)
   posted.forEach((p, idx) => {
     if (!p.ok) return;

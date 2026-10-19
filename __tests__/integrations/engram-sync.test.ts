@@ -727,6 +727,56 @@ end
         server.close();
       }
     });
+
+    // A POST whose first attempt is retried must be visible in the counts: the
+    // server already processed the timed-out attempt, so the observation reads
+    // back as revision_count >= 2. Data is correct (one observation); `retried`
+    // tells the reader the created/updated split may have drifted.
+    it('reports a retried POST in result.retried', async () => {
+      let observationPosts = 0;
+      const server = http.createServer((req, res) => {
+        req.on('data', () => { /* drain */ });
+        req.on('end', () => {
+          res.setHeader('Content-Type', 'application/json');
+          if (req.method === 'POST' && req.url === '/sessions') {
+            res.writeHead(200);
+            res.end('{}');
+            return;
+          }
+          if (req.method === 'POST' && req.url === '/observations') {
+            observationPosts++;
+            if (observationPosts === 1) {
+              res.writeHead(503);
+              res.end('');
+              return;
+            }
+            res.writeHead(200);
+            res.end(JSON.stringify({ id: 7 }));
+            return;
+          }
+          if (req.method === 'GET' && req.url === '/observations/7') {
+            res.writeHead(200);
+            res.end(JSON.stringify({ revision_count: 2, duplicate_count: 0 }));
+            return;
+          }
+          res.writeHead(404);
+          res.end('{}');
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const port = (server.address() as AddressInfo).port;
+      try {
+        const result = await syncInsightsToEngram([MINIMAL_INSIGHT], `http://127.0.0.1:${port}`);
+        expect(result.failed).toBe(0);
+        expect(result.retried).toBe(1);
+        // The ambiguous case labels honestly as an update, not a claimed create.
+        expect(result.created).toBe(0);
+        expect(result.updated).toBe(1);
+      } finally {
+        server.closeAllConnections();
+        server.close();
+      }
+    });
   });
 
   // =========================================================================

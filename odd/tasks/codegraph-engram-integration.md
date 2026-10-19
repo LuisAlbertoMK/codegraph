@@ -112,3 +112,4 @@ CodeGraph (TypeScript/Node)          Engram (Go/SQLite)
 - Integration test: 10 insights extracted, 9 created + 1 updated, dedup works (0 created, 10 updated on re-sync)
 - Docs: docs/integrations/engram.md
 - CHANGELOG: Entry under [Unreleased] > New Features
+- Retry transparency (post-review nits from `d7fa2e1`): `syncInsightsToEngram` now reports a `retried` count (POSTs that needed more than one attempt) in its result and in the sync log line, so the created/updated split is readable when a retried POST the server already processed reads back as `revision_count >= 2`. `fetchWithRetry`'s doc now states that `init` is replayed and is safe only for `JSON.stringify` string bodies. 1 new test; engram integration files 44/44 green, `tsc --noEmit` clean.
