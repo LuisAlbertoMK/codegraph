@@ -81,6 +81,14 @@ Index used for the backend numbers: this repository's own `.codegraph/` index.
 7. **`noindex` for the loopback viewer** (`ui/index.html`). The viewer reads a
    local index and has nothing to offer a crawler.
 
+### Packaging
+
+8. **Shell scripts now keep LF endings on a Windows checkout** (`.gitattributes`).
+   `install.sh` and the bundle recipe are piped into `sh`; with `core.autocrlf`
+   the working copy wrote `set -eu\r`, which dash rejects with "Illegal option"
+   before the platform dispatch runs. This was found by the Linux run below and
+   reproduced the installer's Windows-shell guidance failure.
+
 ### Tests
 
 - `__tests__/db-read-cache.test.ts` (6 tests): repeated reads are stable, a
@@ -118,6 +126,17 @@ Index used for the backend numbers: this repository's own `.codegraph/` index.
 | Font payload (458 KB, 176 KB of legacy `.woff`) | Browsers fetch woff2 first; the legacy files only affect package size. Pruning them needs CSS rewriting. |
 | Extraction/resolution correctness across languages | Needs the corpus/agent evaluation, not a static pass. |
 
+## Cross-platform validation
+
+- **Linux (Docker, `node:22-bookworm`): full suite green — 6,483 passed, 0
+  failed, 357 skipped, ~103 s.** The image installs `zip`/`unzip` for the
+  bundle-launcher archive tests and is run with `--rm --init`, as the repo
+  guidance requires for process-lifecycle tests.
+- **Windows (local):** full suite does not finish inside the 25-minute tool
+  window on this machine, so only the affected suites were run here
+  (`db-read-cache`, `db-perf`, `dominant-file-cache`, `graph`,
+  `ui-server-api`, `ui-package`) — all green after the fixes below.
+
 ## Reproduce
 
 ```bash
@@ -125,6 +144,17 @@ npx vitest run __tests__/db-read-cache.test.ts
 npm run check --workspace ui
 npm run build
 npm audit --omit=dev
+```
+
+The Linux run uses a throwaway image built from the repository:
+
+```dockerfile
+FROM node:22-bookworm
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends zip unzip
+COPY . .
+RUN npm ci && npm run build
+CMD ["npm", "test"]
 ```
 
 Backend numbers were taken with a small read-only script that opens
