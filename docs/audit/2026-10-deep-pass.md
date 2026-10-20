@@ -88,6 +88,12 @@ Index used for the backend numbers: this repository's own `.codegraph/` index.
   returned value cannot corrupt the cache, both memos are dropped when a
   pooled worker rebinds to a fresh connection, and a value read inside a
   rolled-back transaction is recomputed instead of kept.
+- The real-graph API check now asks the index for its busiest node instead of
+  pinning `LRUCache.get`, whose fan-in had drifted to 23 on a current index.
+  The stopwatch moved to the deterministic fixture (500 callers), because a
+  stopwatch over whatever the real index considers busiest measures the
+  machine and the index's size. `ui-server-api.test.ts` is green on this
+  repository's own index.
 
 ## Verified, no change needed
 
@@ -110,7 +116,6 @@ Index used for the backend numbers: this repository's own `.codegraph/` index.
 | `src/resolution/name-matcher.ts` (704 KB) and `src/mcp/tools.ts` (448 KB) | God files hurt review and navigation, but splitting them is a pure refactor with no runtime gain and a large characterization-test surface. Plan separately. |
 | `getAllNodes()` full-table materialiser | Production callers are gone; only tests and comments reference it. Removing it is safe but not urgent. |
 | Font payload (458 KB, 176 KB of legacy `.woff`) | Browsers fetch woff2 first; the legacy files only affect package size. Pruning them needs CSS rewriting. |
-| `ui-server-api.test.ts` “engine's own busiest symbol” | Asserts `fanIn > 300` against the local, gitignored index; this machine's index reports 23, so the check fails for index age, not code. It should derive the threshold from the index or skip a stale one. |
 | Extraction/resolution correctness across languages | Needs the corpus/agent evaluation, not a static pass. |
 
 ## Reproduce
