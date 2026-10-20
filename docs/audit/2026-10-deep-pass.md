@@ -82,9 +82,10 @@ Index used for the backend numbers: this repository's own `.codegraph/` index.
 
 ### Tests
 
-- `__tests__/db-read-cache.test.ts` (4 tests): repeated reads are stable, a
-  write invalidates both memos, the limit is part of the key, and mutating a
-  returned value cannot corrupt the cache.
+- `__tests__/db-read-cache.test.ts` (5 tests): repeated reads are stable, a
+  write invalidates both memos, the limit is part of the key, mutating a
+  returned value cannot corrupt the cache, and both memos are dropped when a
+  pooled worker rebinds to a fresh connection.
 
 ## Verified, no change needed
 
