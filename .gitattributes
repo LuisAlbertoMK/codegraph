@@ -1,0 +1,5 @@
+# Shell scripts ship to Linux/macOS and are piped into `sh`, so they must keep
+# LF endings even when the checkout is made on Windows (CRLF turns `set -eu`
+# into an invalid option).
+*.sh text eol=lf
+.gitattributes text eol=lf

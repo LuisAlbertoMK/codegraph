@@ -12,8 +12,15 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- The viewer's Map, Screens, Steps and Flow screens now load on demand, so the first screen ships about two-thirds less JavaScript (507 KB to 190 KB) and Symbol, File and Dead-code screens open without downloading the diagram engine.
+- Viewer screens now reuse the index's counts and most-depended-on symbols until the graph changes, so moving between screens no longer re-runs whole-table aggregates on a large repository.
+- The installed package's production dependencies no longer carry a known high-severity vulnerability.
+
 ### Fixes
 
+- On windows narrower than about 860 px, the viewer's tab strip now scrolls and the project badge steps aside instead of pushing the search box off-screen.
 - In VB.NET, every member of a `Structure` is now indexed, including its fields, properties, methods, constructors and nested enums. Before, only the first member was, so the rest could not be found and their callers looked empty.
 - In VB.NET and C#, what a property's `Get` and `Set` code calls, creates and reads now belongs to that property, as do C#'s `get => …` accessors and `=> …` property bodies. Before, it was dropped, so a method used only from a property looked unused.
 - In VB.NET, a field or property initializer like `= Compute()` or `As New List(Of Order)` now links what it calls and creates, and so do a `Custom Event`'s `AddHandler`, `RemoveHandler` and `RaiseEvent` blocks. Re-index VB.NET and C# projects after upgrading.

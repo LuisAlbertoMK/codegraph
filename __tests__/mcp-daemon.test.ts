@@ -243,7 +243,9 @@ describe('Shared MCP daemon (issue #411)', () => {
         raw.once('error', reject);
       });
       process.kill(pid, 'SIGTERM');
-      expect(await waitProcessExit(pid, 1500)).toBe(true);
+      // Loaded hosts need room for the signal to be handled and the process
+      // reaped; 1.5 s failed under a full-suite run while passing in isolation.
+      expect(await waitProcessExit(pid, 5000)).toBe(true);
       expect(fs.existsSync(path.join(realRoot, '.codegraph', 'writer.pid'))).toBe(false);
     } finally {
       raw.destroy();

@@ -6,10 +6,13 @@
   import SymbolView from './views/SymbolView.svelte';
   import FileView from './views/FileView.svelte';
   import FileCodeView from './views/FileCodeView.svelte';
-  import MapView from './views/MapView.svelte';
-  import ScreensView from './views/ScreensView.svelte';
-  import StepsView from './views/StepsView.svelte';
-  import FlowView from './views/FlowView.svelte';
+  // The four @xyflow screens are loaded on demand: they are the heaviest
+  // dependency in the bundle and a reader on Symbol/File/Dead code never
+  // needs them. The wrappers preserve each view's props contract.
+  import MapView from './views/MapViewLazy.svelte';
+  import ScreensView from './views/ScreensViewLazy.svelte';
+  import StepsView from './views/StepsViewLazy.svelte';
+  import FlowView from './views/FlowViewLazy.svelte';
   import EntryView from './views/EntryView.svelte';
   import DeadCodeView from './views/DeadCodeView.svelte';
   import NotFoundView from './views/NotFoundView.svelte';

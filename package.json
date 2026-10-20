@@ -19,6 +19,9 @@
   "workspaces": [
     "ui"
   ],
+  "overrides": {
+    "devalue": "^5.9.4"
+  },
   "scripts": {
     "build": "tsc && npm run copy-assets && npm run build:ui && node -e \"require('fs').chmodSync('dist/bin/codegraph.js', 0o755)\"",
     "build:ui": "npm run build --workspace ui && node scripts/check-ui-build.mjs",

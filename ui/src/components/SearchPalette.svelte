@@ -159,6 +159,9 @@
     position: relative;
     width: 100%;
     max-width: 720px;
+    /* Grid items default to min-width:auto, which would let the placeholder
+       hold the column wider than the window on a narrow screen. */
+    min-width: 0;
   }
 
   #q {

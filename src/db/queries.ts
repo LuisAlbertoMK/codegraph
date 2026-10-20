@@ -210,8 +210,23 @@ function rowToEdge(row: EdgeRow): Edge {
 }
 
 /**
- * Convert database row to FileRecord object
+ * A copy safe to hand out: callers may mutate the arrays and buckets they get
+ * (the viewer sorts and annotates them), and a cached object must not carry
+ * those mutations into the next caller. `dbSizeBytes`/`walSizeBytes` stay 0 —
+ * they are filled by the caller that owns the connection.
  */
+function cloneStats(stats: GraphStats): GraphStats {
+  return {
+    ...stats,
+    nodesByKind: { ...stats.nodesByKind },
+    edgesByKind: { ...stats.edgesByKind },
+    filesByLanguage: { ...stats.filesByLanguage },
+    dbSizeBytes: 0,
+    walSizeBytes: 0,
+    lastUpdated: Date.now(),
+  };
+}
+
 function rowToFileRecord(row: FileRow): FileRecord {
   return {
     path: row.path,
@@ -252,6 +267,18 @@ export class QueryBuilder {
   private dominantFileMemo:
     | { stamp: string; value: { filePath: string; edgeCount: number; nextEdgeCount: number } | null }
     | undefined;
+
+  // getTopDependedOn()'s answer, tagged with the change stamp and the limit.
+  // The query is a GROUP BY over the whole edge table (~175 ms on a 95k-edge
+  // index) and the viewer asks for it on every entry-points request, while the
+  // answer only changes when the graph does.
+  private topDependedOnMemo:
+    | { stamp: string; limit: number; value: Array<{ nodeId: string; dependents: number }> }
+    | undefined;
+
+  // getStats()'s aggregates, same rationale: five full-table aggregates run at
+  // the top of most viewer API handlers, and only the graph writes change them.
+  private statsMemo: { stamp: string; value: GraphStats } | undefined;
 
   // Prepared statements (lazily initialized)
   private stmts: {
@@ -389,9 +416,11 @@ export class QueryBuilder {
     this.batchStmts.clear();
     this.edgeKindStmts.clear();
     // The change stamp is per connection, and fresh connections to two
-    // different databases report the same one — the memo goes with the old
+    // different databases report the same one — every memo goes with the old
     // connection, or a worker following a rebuilt index keeps its answer (#1864).
     this.dominantFileMemo = undefined;
+    this.topDependedOnMemo = undefined;
+    this.statsMemo = undefined;
   }
 
   private edgeKindStmt(sql: string): SqliteStatement {
@@ -2596,6 +2625,20 @@ export class QueryBuilder {
    */
   getTopDependedOn(limit: number): Array<{ nodeId: string; dependents: number }> {
     if (limit <= 0) return [];
+    // total_changes() counts writes a later ROLLBACK undoes, so an answer read
+    // inside a transaction could outlive it under an unchanged stamp. Never
+    // keep one; `undefined` (a runtime without the getter) is treated the same
+    // way.
+    let stamp: string | undefined;
+    if (this.db.inTransaction !== false) {
+      this.topDependedOnMemo = undefined;
+    } else {
+      stamp = this.getChangeStamp();
+      const memo = this.topDependedOnMemo;
+      if (memo && memo.stamp === stamp && memo.limit === limit) {
+        return memo.value.map((row) => ({ ...row }));
+      }
+    }
     const rows = this.db
       .prepare(
         `SELECT target AS nodeId, COUNT(DISTINCT source) AS dependents
@@ -2606,7 +2649,10 @@ export class QueryBuilder {
           LIMIT ?`
       )
       .all(limit) as Array<{ nodeId: string; dependents: number }>;
-    return rows;
+    if (stamp !== undefined) this.topDependedOnMemo = { stamp, limit, value: rows };
+    // Hand out copies: hub lists are sorted/annotated downstream, and the memo
+    // must describe the table, not the last caller's edits.
+    return rows.map((row) => ({ ...row }));
   }
 
   /**
@@ -4194,6 +4240,22 @@ export class QueryBuilder {
    * Get graph statistics
    */
   getStats(): GraphStats {
+    // Five full-table aggregates, called at the top of most viewer API
+    // handlers and again after every live index tick. The counts only move
+    // when the graph does, so one change-stamp key serves them all.
+    //
+    // total_changes() counts writes a later ROLLBACK undoes, so a value read
+    // inside a transaction could outlive it under an unchanged stamp. Never
+    // keep one; `undefined` (a runtime without the getter) is treated the same
+    // way.
+    let stamp: string | undefined;
+    if (this.db.inTransaction !== false) {
+      this.statsMemo = undefined;
+    } else {
+      stamp = this.getChangeStamp();
+      if (this.statsMemo?.stamp === stamp) return cloneStats(this.statsMemo.value);
+    }
+
     // Single query for all three aggregate counts
     const counts = this.db.prepare(`
       SELECT
@@ -4226,7 +4288,7 @@ export class QueryBuilder {
       filesByLanguage[row.language as Language] = row.count;
     }
 
-    return {
+    const stats: GraphStats = {
       nodeCount: counts.node_count,
       edgeCount: counts.edge_count,
       fileCount: counts.file_count,
@@ -4237,6 +4299,8 @@ export class QueryBuilder {
       walSizeBytes: 0, // Set by caller using DatabaseConnection.getWalSizeBytes()
       lastUpdated: Date.now(),
     };
+    if (stamp !== undefined) this.statsMemo = { stamp, value: stats };
+    return cloneStats(stats);
   }
 
   // ===========================================================================
