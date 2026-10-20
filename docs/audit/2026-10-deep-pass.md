@@ -46,7 +46,8 @@ Index used for the backend numbers: this repository's own `.codegraph/` index.
    `/api/entrypoints` asks for it on every request. The answer is now cached
    against the connection's change stamp (`total_changes()` +
    `PRAGMA data_version`) and the requested limit, so any write from this
-   connection or any other invalidates it.
+   connection or any other invalidates it. Reads taken inside a transaction are
+   never cached: `total_changes()` counts writes a later `ROLLBACK` undoes.
    Effect on this index: **220 ms cold → 0.07–0.66 ms warm**.
 2. **Memoised graph statistics** (`src/db/queries.ts`).
    `getStats` runs five full-table aggregates and sits at the top of most
@@ -82,10 +83,11 @@ Index used for the backend numbers: this repository's own `.codegraph/` index.
 
 ### Tests
 
-- `__tests__/db-read-cache.test.ts` (5 tests): repeated reads are stable, a
+- `__tests__/db-read-cache.test.ts` (6 tests): repeated reads are stable, a
   write invalidates both memos, the limit is part of the key, mutating a
-  returned value cannot corrupt the cache, and both memos are dropped when a
-  pooled worker rebinds to a fresh connection.
+  returned value cannot corrupt the cache, both memos are dropped when a
+  pooled worker rebinds to a fresh connection, and a value read inside a
+  rolled-back transaction is recomputed instead of kept.
 
 ## Verified, no change needed
 

@@ -2625,10 +2625,19 @@ export class QueryBuilder {
    */
   getTopDependedOn(limit: number): Array<{ nodeId: string; dependents: number }> {
     if (limit <= 0) return [];
-    const stamp = this.getChangeStamp();
-    const memo = this.topDependedOnMemo;
-    if (memo && memo.stamp === stamp && memo.limit === limit) {
-      return memo.value.map((row) => ({ ...row }));
+    // total_changes() counts writes a later ROLLBACK undoes, so an answer read
+    // inside a transaction could outlive it under an unchanged stamp. Never
+    // keep one; `undefined` (a runtime without the getter) is treated the same
+    // way.
+    let stamp: string | undefined;
+    if (this.db.inTransaction !== false) {
+      this.topDependedOnMemo = undefined;
+    } else {
+      stamp = this.getChangeStamp();
+      const memo = this.topDependedOnMemo;
+      if (memo && memo.stamp === stamp && memo.limit === limit) {
+        return memo.value.map((row) => ({ ...row }));
+      }
     }
     const rows = this.db
       .prepare(
@@ -2640,7 +2649,7 @@ export class QueryBuilder {
           LIMIT ?`
       )
       .all(limit) as Array<{ nodeId: string; dependents: number }>;
-    this.topDependedOnMemo = { stamp, limit, value: rows };
+    if (stamp !== undefined) this.topDependedOnMemo = { stamp, limit, value: rows };
     // Hand out copies: hub lists are sorted/annotated downstream, and the memo
     // must describe the table, not the last caller's edits.
     return rows.map((row) => ({ ...row }));
@@ -4234,8 +4243,18 @@ export class QueryBuilder {
     // Five full-table aggregates, called at the top of most viewer API
     // handlers and again after every live index tick. The counts only move
     // when the graph does, so one change-stamp key serves them all.
-    const stamp = this.getChangeStamp();
-    if (this.statsMemo?.stamp === stamp) return cloneStats(this.statsMemo.value);
+    //
+    // total_changes() counts writes a later ROLLBACK undoes, so a value read
+    // inside a transaction could outlive it under an unchanged stamp. Never
+    // keep one; `undefined` (a runtime without the getter) is treated the same
+    // way.
+    let stamp: string | undefined;
+    if (this.db.inTransaction !== false) {
+      this.statsMemo = undefined;
+    } else {
+      stamp = this.getChangeStamp();
+      if (this.statsMemo?.stamp === stamp) return cloneStats(this.statsMemo.value);
+    }
 
     // Single query for all three aggregate counts
     const counts = this.db.prepare(`
@@ -4280,7 +4299,7 @@ export class QueryBuilder {
       walSizeBytes: 0, // Set by caller using DatabaseConnection.getWalSizeBytes()
       lastUpdated: Date.now(),
     };
-    this.statsMemo = { stamp, value: stats };
+    if (stamp !== undefined) this.statsMemo = { stamp, value: stats };
     return cloneStats(stats);
   }
 

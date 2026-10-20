@@ -115,6 +115,27 @@ describe('QueryBuilder read memoization', () => {
     other.close();
   });
 
+  it('does not keep a value read inside a rolled-back transaction', () => {
+    q.insertNodes([makeNode('a')]);
+    expect(q.getStats().nodeCount).toBe(1);
+    expect(q.getTopDependedOn(10)).toEqual([]);
+
+    const tx = db.getDb().transaction(() => {
+      q.insertNodes([makeNode('b')]);
+      q.insertEdges([makeEdge('b', 'a')]);
+      // Inside the transaction the uncommitted rows are visible.
+      expect(q.getStats().nodeCount).toBe(2);
+      expect(q.getTopDependedOn(10)).toEqual([{ nodeId: 'a', dependents: 1 }]);
+      throw new Error('rollback');
+    });
+    expect(tx).toThrow('rollback');
+
+    // total_changes() is not reduced by the rollback, so a memo keyed only on
+    // the stamp would still claim the rolled-back rows exist.
+    expect(q.getStats().nodeCount).toBe(1);
+    expect(q.getTopDependedOn(10)).toEqual([]);
+  });
+
   it('caches getStats until the graph changes, and returns a safe copy', () => {
     q.insertNodes([makeNode('a'), makeNode('b')]);
 
