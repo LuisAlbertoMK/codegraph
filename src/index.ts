@@ -785,7 +785,7 @@ export class CodeGraph {
 
         // Post-index hook: sync insights to Engram (non-blocking, fire-and-forget)
         if (process.env.CODEGRAPH_ENGRAM_ENABLED === '1') {
-          this.syncInsightsToEngram().catch(() => { /* never fail index over Engram */ });
+          this.syncInsightsToEngram('index').catch(() => { /* never fail index over Engram */ });
         }
 
         return result;
@@ -1221,7 +1221,7 @@ export class CodeGraph {
 
         // Post-index hook: sync insights to Engram (non-blocking, fire-and-forget)
         if (process.env.CODEGRAPH_ENGRAM_ENABLED === '1') {
-          this.syncInsightsToEngram().catch(() => { /* never fail sync over Engram */ });
+          this.syncInsightsToEngram('sync').catch(() => { /* never fail sync over Engram */ });
         }
 
         return result;
@@ -2466,10 +2466,14 @@ export class CodeGraph {
    * Extracts top symbols by centrality and persists them to Engram
    * for cross-session recall.
    */
-  async syncInsightsToEngram(): Promise<void> {
+  async syncInsightsToEngram(trigger: 'index' | 'sync' | 'manual' = 'manual'): Promise<void> {
+    const startedAt = performance.now();
+    const root = this.getProjectRoot();
+    let project = root.split(/[\\/]/).pop() || 'unknown';
     try {
       const { extractInsights, syncInsightsToEngram: sync } = await import('./integrations/engram-sync');
-      const project = this.getProjectRoot().split(/[\\/]/).pop() || 'unknown';
+      const { logEngram } = await import('./integrations/engram-log');
+      project = root.split(/[\\/]/).pop() || 'unknown';
 
       console.log(`[codegraph] Extracting insights for Engram sync (project: ${project})...`);
       const insights = await extractInsights(this, {
@@ -2482,13 +2486,23 @@ export class CodeGraph {
 
       if (insights.length === 0) {
         console.log('[codegraph] No insights to sync.');
+        logEngram('hook.sync', {
+          trigger, project, insights: 0, ms: Math.round(performance.now() - startedAt),
+        }, root);
         return;
       }
 
       const result = await sync(insights, undefined, { rootDir: this.getProjectRoot() });
+      logEngram('hook.sync', {
+        trigger, project, insights: insights.length, ...result, ms: Math.round(performance.now() - startedAt),
+      }, root);
       console.log(`[codegraph] Engram sync complete: ${result.created} created, ${result.updated} updated, ${result.skipped} unchanged, ${result.failed} failed, ${result.retried} retried.`);
     } catch (err) {
       // Never fail sync/index over Engram
+      const { logEngram, describeError } = await import('./integrations/engram-log');
+      logEngram('hook.sync', {
+        trigger, project, ok: false, error: describeError(err), ms: Math.round(performance.now() - startedAt),
+      }, root);
       console.error(`[codegraph] Engram sync failed: ${err}`);
     }
   }

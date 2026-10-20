@@ -7723,20 +7723,38 @@ export class ToolHandler {
     const rawQuery = this.validateString(args.query, 'query');
     if (typeof rawQuery !== 'string') return rawQuery;
 
+    const { elapsedMs, logEngram, startTimer } = await import('../integrations/engram-log');
+    const traceRoot = (args.projectPath as string | undefined) ?? process.cwd();
+    const startedAt = startTimer();
+
     // Call normal explore first
+    const exploreStartedAt = startTimer();
     const exploreResult = await this.handleExplore(args);
+    const exploreMs = elapsedMs(exploreStartedAt);
 
     // Check if memory enrichment is requested
     const includeMemory = (args.includeMemory as boolean) ?? true;
-    if (!includeMemory) return exploreResult;
+    if (!includeMemory) {
+      logEngram('tool.explore_with_memory', {
+        query: rawQuery, includeMemory: false, exploreMs, memoryMs: 0, totalMs: elapsedMs(startedAt),
+      }, traceRoot);
+      return exploreResult;
+    }
 
     // Try to get memory from Engram (non-blocking, graceful degradation)
     try {
       const { searchEngramMemory } = await import('../integrations/engram-sync');
       const project = this.resolveEngramProject(args);
-      const memory = await searchEngramMemory(rawQuery, { limit: 3, project });
+      const memoryStartedAt = startTimer();
+      const memory = await searchEngramMemory(rawQuery, { limit: 3, project, rootDir: traceRoot });
+      const memoryMs = elapsedMs(memoryStartedAt);
 
-      if (memory.length === 0) return exploreResult;
+      if (memory.length === 0) {
+        logEngram('tool.explore_with_memory', {
+          query: rawQuery, project, exploreMs, memoryMs, totalMs: elapsedMs(startedAt), count: 0, injected: false,
+        }, traceRoot);
+        return exploreResult;
+      }
 
       // Build memory section
       const memoryLines = [
@@ -7752,7 +7770,24 @@ export class ToolHandler {
       const exploreText = exploreResult.content?.[0]?.text || '';
       const enrichedText = memoryLines.join('\n') + exploreText;
 
+      logEngram('tool.explore_with_memory', {
+        query: rawQuery,
+        project,
+        exploreMs,
+        memoryMs,
+        totalMs: elapsedMs(startedAt),
+        count: memory.length,
+        injected: true,
+        injectedChars: memoryLines.join('\n').length,
+        exploreChars: exploreText.length,
+      }, traceRoot);
+
       return {
+        // Spread the explore result, not a fresh object: it carries the
+        // emission/answer-files side channels the session records after the
+        // call, and rebuilding it here would silently drop what this explore
+        // actually put on the wire (later explores would re-serve source).
+        ...exploreResult,
         content: [
           {
             type: 'text',
@@ -7761,8 +7796,15 @@ export class ToolHandler {
         ],
         isError: false,
       };
-    } catch {
+    } catch (err) {
       // Graceful degradation: return normal explore if Engram fails
+      logEngram('tool.explore_with_memory', {
+        query: rawQuery,
+        project: this.resolveEngramProject(args),
+        exploreMs,
+        totalMs: elapsedMs(startedAt),
+        error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      }, traceRoot);
       return exploreResult;
     }
   }
@@ -7787,12 +7829,19 @@ export class ToolHandler {
 
     const project = this.resolveEngramProject(args);
 
+    const { elapsedMs, logEngram, startTimer } = await import('../integrations/engram-log');
+    const traceRoot = (args.projectPath as string | undefined) ?? process.cwd();
+    const startedAt = startTimer();
+
     try {
       const { searchEngramMemory } = await import('../integrations/engram-sync');
-      const memory = await searchEngramMemory(rawQuery, { limit, project });
+      const memory = await searchEngramMemory(rawQuery, { limit, project, rootDir: traceRoot });
       const lines = memory.length === 0
         ? ['No matching project memory found (nothing stored yet, or Engram is unreachable).']
         : memory.map((m) => `- **${m.title}** (${m.type}, score: ${m.score})\n  ${m.content.split('\n').slice(0, 5).join('\n  ')}`);
+      logEngram('tool.memory_search', {
+        query: rawQuery, project, limit, count: memory.length, ms: elapsedMs(startedAt),
+      }, traceRoot);
       return {
         content: [
           {
@@ -7802,7 +7851,15 @@ export class ToolHandler {
         ],
         isError: false,
       };
-    } catch {
+    } catch (err) {
+      logEngram('tool.memory_search', {
+        query: rawQuery,
+        project,
+        limit,
+        count: 0,
+        ms: elapsedMs(startedAt),
+        error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      }, traceRoot);
       return {
         content: [
           {

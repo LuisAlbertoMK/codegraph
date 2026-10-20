@@ -252,6 +252,11 @@ end
     // Initialize and index
     cg = await CodeGraph.init(testDir, { index: true });
 
+    // Keep the diagnostics trace inside the throwaway project: without this the
+    // tool tests' trace lands in the REPO's own .codegraph/ (they call the tool
+    // with no projectPath, so the server's cwd is used).
+    process.env.CODEGRAPH_ENGRAM_DEBUG_FILE = path.join(testDir, 'engram-trace.jsonl');
+
     // Start Engram stub
     await startEngramStub();
     await waitForEngram(engramUrl);
@@ -260,6 +265,7 @@ end
   afterAll(async () => {
     await cg?.close();
     stopEngramStub();
+    delete process.env.CODEGRAPH_ENGRAM_DEBUG_FILE;
     if (testDir) {
       fs.rmSync(testDir, { recursive: true, force: true });
     }
@@ -876,6 +882,106 @@ end
 
       expect(res.isError).toBe(false);
       expect(((res.content?.[0] as unknown as { text?: string })?.text || '')).toContain('No matching project memory');
+    });
+  });
+
+  // =========================================================================
+  // Diagnostics trace — the trace is the only record that a call happened
+  // =========================================================================
+
+  describe('diagnostics trace', () => {
+    const traceFile = () => path.join(testDir, '.codegraph', 'engram-debug.jsonl');
+
+    const readTrace = (): Array<Record<string, unknown>> => {
+      if (!fs.existsSync(traceFile())) return [];
+      return fs.readFileSync(traceFile(), 'utf8')
+        .split('\n')
+        .filter((line) => line.trim().length > 0)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+    };
+
+    const clearTrace = (): void => {
+      fs.rmSync(traceFile(), { force: true });
+      fs.rmSync(`${traceFile()}.1`, { force: true });
+    };
+
+    beforeEach(() => {
+      clearTrace();
+      delete process.env.CODEGRAPH_ENGRAM_DEBUG;
+      delete process.env.CODEGRAPH_ENGRAM_DEBUG_FILE;
+      delete process.env.CODEGRAPH_ENGRAM_DEBUG_MAX_BYTES;
+    });
+
+    afterEach(() => {
+      clearTrace();
+      delete process.env.CODEGRAPH_ENGRAM_DEBUG;
+      delete process.env.CODEGRAPH_ENGRAM_DEBUG_FILE;
+      delete process.env.CODEGRAPH_ENGRAM_DEBUG_MAX_BYTES;
+    });
+
+    it('records a memory search with its duration and result count', async () => {
+      await searchEngramMemory('AuthService', {
+        limit: 3, project: 'test-project', engramUrl, rootDir: testDir,
+      });
+
+      const line = readTrace().find((e) => e.event === 'memory.search');
+      expect(line).toBeDefined();
+      expect(line?.ok).toBe(true);
+      expect(line?.count).toBeGreaterThan(0);
+      expect(typeof line?.ms).toBe('number');
+      // The trace keeps the interpreted query, so a zero-result search can be
+      // traced back to what was actually sent.
+      expect(line?.terms).toBe('AuthService');
+      expect(typeof line?.ts).toBe('string');
+    });
+
+    it('records an unreachable Engram as a failure, not as an empty result', async () => {
+      await searchEngramMemory('AuthService', {
+        limit: 3, project: 'test-project', engramUrl: 'http://localhost:59999', rootDir: testDir,
+      });
+
+      const line = readTrace().find((e) => e.event === 'memory.search');
+      expect(line?.ok).toBe(false);
+      expect(typeof line?.error).toBe('string');
+      expect(line?.count).toBe(0);
+    });
+
+    it('records the sync phases, including a line per posted insight', async () => {
+      await syncInsightsToEngram([MINIMAL_INSIGHT], engramUrl, { rootDir: testDir });
+
+      const events = readTrace().map((e) => e.event);
+      expect(events).toContain('sync.start');
+      expect(events).toContain('sync.session');
+      expect(events).toContain('sync.post');
+      expect(events).toContain('sync.done');
+
+      const done = readTrace().find((e) => e.event === 'sync.done');
+      expect(done?.posted).toBe(1);
+      expect(typeof done?.sessionMs).toBe('number');
+      expect(typeof done?.postMs).toBe('number');
+      expect(typeof done?.ms).toBe('number');
+    });
+
+    it('rotates at the configured cap and keeps one previous generation', async () => {
+      process.env.CODEGRAPH_ENGRAM_DEBUG_MAX_BYTES = '256';
+      for (let i = 0; i < 8; i++) {
+        await searchEngramMemory('AuthService', {
+          limit: 3, project: 'test-project', engramUrl, rootDir: testDir,
+        });
+      }
+
+      expect(fs.existsSync(`${traceFile()}.1`)).toBe(true);
+      // The live file is bounded: the next write after rotation is small.
+      expect(fs.statSync(traceFile()).size).toBeLessThan(2048);
+    });
+
+    it('writes nothing when the trace is switched off', async () => {
+      process.env.CODEGRAPH_ENGRAM_DEBUG = '0';
+      await searchEngramMemory('AuthService', {
+        limit: 3, project: 'test-project', engramUrl, rootDir: testDir,
+      });
+
+      expect(fs.existsSync(traceFile())).toBe(false);
     });
   });
 });

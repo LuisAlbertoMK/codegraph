@@ -123,8 +123,49 @@ codegraph:{project}:{qualified_name}
 ```
 
 Re-indexing updates existing observations instead of duplicating them.
+## Diagnostics (trace)
+
+Every memory search, insight extraction, sync attempt and memory-aware tool call appends one JSON line to a bounded trace:
+
+```
+<project>/.codegraph/engram-debug.jsonl      # rotated to .1 at 1 MiB, one previous generation kept
+```
+
+This exists because the integration degrades silently by design: a slow, dead, or empty Engram all look the same from the tool output ("no matching memory"). The trace is what tells them apart after the fact, without a server to query.
+
+```bash
+# failures only — a memory search that never reached Engram
+rg '"event":"memory.search","project":"x".*"ok":false' .codegraph/engram-debug.jsonl
+
+# where a slow explore actually spent its time
+rg '"event":"tool.explore_with_memory"' .codegraph/engram-debug.jsonl | tail -1
+```
+
+Each line carries `ts`, `pid`, `event` and, wherever the caller can time it, `ms`. `pid` matters: a tool call can be answered by the session's own MCP process or by the shared background daemon, and which one it was decides which build (and which `CODEGRAPH_*` env) produced the numbers.
+
+| event | what it records |
+|---|---|
+| `memory.search` | query, the terms actually sent (stopwords stripped), limit, project, `ok`/`status`/`error`, `count`, `ms` |
+| `tool.memory_search` | the MCP call: `count`, `ms` |
+| `tool.explore_with_memory` | `exploreMs`, `memoryMs`, `totalMs`, `count`, `injected`, injected/explore chars |
+| `extract.done` | nodes scanned, caller candidates, scored pool, insights produced, `ms` |
+| `sync.start` | insights offered vs posted, skipped (hash unchanged), state entries, `stateMs` |
+| `sync.session`, `sync.post` | per-request `status`/`attempts`/`pid`/`ms`, keyed by insight |
+| `sync.done` | `created`/`updated`/`failed`/`skipped`/`retried` plus `sessionMs`, `postMs`, `revisionMs`, `ms` |
+| `hook.sync` | the post-index hook: `trigger` (`index`/`sync`), totals, `ms` |
+
+Knobs:
+
+```bash
+export CODEGRAPH_ENGRAM_DEBUG=0                 # turn the trace off (default: on)
+export CODEGRAPH_ENGRAM_DEBUG_FILE=/tmp/x.jsonl # write somewhere else (default: per-project)
+export CODEGRAPH_ENGRAM_DEBUG_MAX_BYTES=1048576 # rotation threshold (default: 1 MiB)
+```
+
+The trace never throws: a full disk, a locked file or a missing directory must not break indexing or a tool call. It also never leaves the machine — no network, no telemetry.
 
 ## Benchmarks
+
 
 ### Baseline (without Engram)
 
@@ -175,6 +216,7 @@ node scripts/benchmark-mcp-memory.mjs
 ### Files
 
 - `src/integrations/engram-sync.ts` — Insight extractor + Engram HTTP client
+- `src/integrations/engram-log.ts` — Bounded JSONL diagnostics trace (`engram-debug.jsonl`)
 - `src/mcp/tools.ts` — `explore_with_memory` MCP tool
 - `src/index.ts` — Post-index hook + `syncInsightsToEngram()` method
 - `scripts/engram-stub.mjs` — Development stub server

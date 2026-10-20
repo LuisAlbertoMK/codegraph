@@ -17,6 +17,7 @@ import type CodeGraph from '../index';
 import type { Node } from '../types';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { describeError, elapsedMs, logEngram, startTimer } from './engram-log';
 
 // ============================================================================
 // Types
@@ -94,6 +95,12 @@ export async function extractInsights(
     project = process.cwd().split(/[\\/]/).pop() || 'unknown',
     includeFlows = true,
   } = options;
+
+  // The trace belongs to the project being indexed, so a reader can tell which
+  // repository an extraction belonged to without cross-referencing the timestamp.
+  let traceRoot: string | undefined;
+  try { traceRoot = graph.getProjectRoot(); } catch { /* not open: no root to log into */ }
+  const startedAt = startTimer();
 
   // Get all code-bearing nodes
   const allNodes = graph.getNodesByKind('function')
@@ -200,6 +207,16 @@ export async function extractInsights(
     insights.push(...flowInsights);
   }
 
+  logEngram('extract.done', {
+    project,
+    nodes: allNodes.length,
+    callerCandidates: byCallers.length,
+    scored: scored.length,
+    pool: poolSize,
+    insights: insights.length,
+    ms: elapsedMs(startedAt),
+  }, traceRoot);
+
   return insights;
 }
 
@@ -295,15 +312,20 @@ function syncSessionIdFor(project: string): string {
   return `ses_cg_sync_${Math.abs(h).toString(36).padStart(7, '0')}`;
 }
 
-async function ensureSyncSession(engramUrl: string, project: string): Promise<string> {
+async function ensureSyncSession(engramUrl: string, project: string, rootDir?: string): Promise<string> {
   const sessionId = syncSessionIdFor(project);
+  const startedAt = startTimer();
   try {
-    await fetchWithRetry(`${engramUrl}/sessions`, {
+    const response = await fetchWithRetry(`${engramUrl}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: sessionId, project }),
     });
-  } catch { /* best-effort; saves surface failures with counts */ }
+    logEngram('sync.session', { project, ok: response.ok, status: response.status, ms: elapsedMs(startedAt) }, rootDir);
+  } catch (err) {
+    // best-effort; saves surface failures with counts. The trace keeps the reason.
+    logEngram('sync.session', { project, ok: false, error: describeError(err), ms: elapsedMs(startedAt) }, rootDir);
+  }
   return sessionId;
 }
 
@@ -449,6 +471,8 @@ export async function syncInsightsToEngram(
   if (insights.length === 0) return result;
 
   const project = insights[0]?.project || 'codegraph';
+  const traceRoot = options.rootDir;
+  const startedAt = startTimer();
 
   // Incremental sync: insights whose content hash matches local state skip
   // the network entirely. State v2 stores {id, hash} per key; v1 states
@@ -464,17 +488,32 @@ export async function syncInsightsToEngram(
     }
     toPost.push(insight);
   }
-  if (toPost.length === 0) return result;
+  logEngram('sync.start', {
+    project,
+    insights: insights.length,
+    toPost: toPost.length,
+    skipped: result.skipped,
+    stateEntries: state.size,
+    stateMs: elapsedMs(startedAt),
+  }, traceRoot);
+  if (toPost.length === 0) {
+    logEngram('sync.done', { project, ...result, ms: elapsedMs(startedAt) }, traceRoot);
+    return result;
+  }
 
-  const sessionId = await ensureSyncSession(engramUrl, project);
+  const sessionStartedAt = startTimer();
+  const sessionId = await ensureSyncSession(engramUrl, project, traceRoot);
+  const sessionMs = elapsedMs(sessionStartedAt);
 
   type Posted =
     | { ok: false }
     | { ok: true; id: number | string; key: string; retried: boolean };
 
+  const postStartedAt = startTimer();
   const posted = await mapWithConcurrency(toPost, SYNC_CONCURRENCY, async (insight): Promise<Posted> => {
+    const requestStartedAt = startTimer();
     try {
-      let retried = false;
+      let attempts = 0;
       const response = await fetchWithRetry(`${engramUrl}/observations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -497,16 +536,26 @@ export async function syncInsightsToEngram(
             source: 'codegraph',
           },
         }),
-      }, () => { retried = true; });
+      }, () => { attempts++; });
 
+      const retried = attempts > 0;
+      const ms = elapsedMs(requestStartedAt);
       if (!response.ok) {
+        logEngram('sync.post', { key: insight.deduplication_key, ok: false, status: response.status, attempts, ms }, traceRoot);
         console.error(`[engram-sync] Failed to sync insight ${insight.deduplication_key}: ${response.status}`);
         return { ok: false };
       }
       const data = (await response.json()) as { id?: number | string };
-      if (data.id === undefined) return { ok: false };
+      if (data.id === undefined) {
+        logEngram('sync.post', { key: insight.deduplication_key, ok: false, reason: 'no-id', attempts, ms }, traceRoot);
+        return { ok: false };
+      }
+      logEngram('sync.post', { key: insight.deduplication_key, ok: true, id: data.id, attempts, ms }, traceRoot);
       return { ok: true, id: data.id, key: insight.deduplication_key, retried };
     } catch (err) {
+      logEngram('sync.post', {
+        key: insight.deduplication_key, ok: false, error: describeError(err), ms: elapsedMs(requestStartedAt),
+      }, traceRoot);
       console.error(`[engram-sync] Error syncing insight ${insight.deduplication_key}: ${err}`);
       return { ok: false };
     }
@@ -528,6 +577,7 @@ export async function syncInsightsToEngram(
     else checkIdx.push(i);
   });
 
+  const revisionStartedAt = startTimer();
   const checked = await mapWithConcurrency(checkIdx, SYNC_CONCURRENCY, async (i) => {
     const p = posted[i];
     if (!p || !p.ok) return { created: false, key: null as string | null, id: null as number | string | null };
@@ -558,6 +608,20 @@ export async function syncInsightsToEngram(
     if (ins) runtimeSeen.set(p.key, { id: p.id, hash: insightHash(ins) });
   });
   saveSyncState(options.rootDir, runtimeSeen);
+
+  // One closing line per sync: the aggregate a reader wants first (how much
+  // moved and how long it took), with each network phase timed separately so a
+  // slow sync can be attributed without reading every per-request line.
+  logEngram('sync.done', {
+    project,
+    ...result,
+    posted: toPost.length,
+    sessionMs,
+    postMs: elapsedMs(postStartedAt),
+    revisionChecks: checkIdx.length,
+    revisionMs: elapsedMs(revisionStartedAt),
+    ms: elapsedMs(startedAt),
+  }, traceRoot);
 
   return result;
 }
@@ -648,27 +712,43 @@ function memoryQueryTerms(query: string): string {
  */
 export async function searchEngramMemory(
   query: string,
-  options: { limit?: number; project?: string; engramUrl?: string } = {}
+  options: { limit?: number; project?: string; engramUrl?: string; rootDir?: string } = {}
 ): Promise<Array<{ title: string; content: string; score: number; type: string }>> {
-  const { limit = 3, project, engramUrl = process.env.ENGRAM_URL || 'http://127.0.0.1:7437' } = options;
+  const { limit = 3, project, engramUrl = process.env.ENGRAM_URL || 'http://127.0.0.1:7437', rootDir } = options;
+  const startedAt = startTimer();
+  const terms = memoryQueryTerms(query);
 
   try {
-    const params = new URLSearchParams({ q: memoryQueryTerms(query), limit: String(limit) });
+    const params = new URLSearchParams({ q: terms, limit: String(limit) });
     if (project) params.set('project', project);
 
     const response = await fetchWithRetry(`${engramUrl}/search?${params}`);
-    if (!response.ok) return [];
+    if (!response.ok) {
+      // A non-2xx here looks identical to "no matching memory" in the tool
+      // output, which is why it gets its own trace line and status.
+      logEngram('memory.search', {
+        project, query, terms, limit, ok: false, status: response.status, count: 0, ms: elapsedMs(startedAt),
+      }, rootDir);
+      return [];
+    }
 
     // Real API returns a bare array of observations (rank doubles as score).
     // Rows may carry nulls (session markers, imports) — coerce, never throw.
     const data = (await response.json()) as Array<{ title: string; content: string; rank?: number; type: string }>;
-    return (Array.isArray(data) ? data : []).map((r) => ({
+    const rows = Array.isArray(data) ? data : [];
+    logEngram('memory.search', {
+      project, query, terms, limit, ok: true, status: response.status, count: rows.length, ms: elapsedMs(startedAt),
+    }, rootDir);
+    return rows.map((r) => ({
       title: String(r.title ?? 'Untitled'),
       content: String(r.content ?? ''),
       score: r.rank ?? 0,
       type: r.type || 'unknown',
     }));
-  } catch {
+  } catch (err) {
+    logEngram('memory.search', {
+      project, query, terms, limit, ok: false, error: describeError(err), count: 0, ms: elapsedMs(startedAt),
+    }, rootDir);
     return [];
   }
 }
