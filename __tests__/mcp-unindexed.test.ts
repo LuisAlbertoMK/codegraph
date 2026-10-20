@@ -165,7 +165,9 @@ describe('No-root-index session policy', () => {
     expect(result.isError).toBeUndefined();
     expect(result.content[0]!.text).toMatch(/validateToken/);
     expect(result.content[0]!.text).not.toMatch(/isn't indexed/);
-  });
+    // Indexing the sub-project and booting a server takes seconds on a loaded
+    // box; the default 5 s timeout failed at 5.1 s under a full-suite run.
+  }, 15_000);
 
   it('an INDEXED workspace still gets the full playbook and the explore tool', async () => {
     fs.writeFileSync(path.join(tempDir, 'index.ts'), 'export function hello(): string { return "hi"; }\n');
@@ -185,7 +187,7 @@ describe('No-root-index session policy', () => {
     // unindexed empty list above.
     expect(tools.length).toBeGreaterThanOrEqual(1);
     expect(tools.map((t) => t.name)).toContain('codegraph_explore');
-  });
+  }, 15_000);
 });
 
 describe('No-error policy on expected conditions', () => {
