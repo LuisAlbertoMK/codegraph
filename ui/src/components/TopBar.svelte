@@ -130,6 +130,15 @@
   .views {
     display: flex;
     gap: 2px;
+    /* On a narrow window the tab strip scrolls instead of pushing the search
+       box and the project badge off-screen. */
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .views::-webkit-scrollbar {
+    display: none;
   }
 
   .views a {
@@ -167,6 +176,21 @@
   @media (max-width: 1000px) {
     .project .mono,
     .project .dim {
+      display: none;
+    }
+  }
+
+  /* Below ~860px the badge is the first whole block to go, then the brand's
+     "ui" suffix: the tab strip and the search box are the two things a reader
+     still needs, and the strip scrolls rather than wraps. */
+  @media (max-width: 860px) {
+    .topbar {
+      gap: 10px;
+      padding: 0 10px;
+    }
+
+    .brand-sub,
+    .project {
       display: none;
     }
   }
