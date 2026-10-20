@@ -703,7 +703,10 @@ describe('Tree-sitter WASM Setup', () => {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
 
     expect(pkg.dependencies['tree-sitter']).toBeUndefined();
-    expect(pkg.overrides).toBeUndefined();
+    // The guard is against pinning a native tree-sitter back in through
+    // `overrides`; unrelated pins (a patched transitive dependency) are fine.
+    const overridden = Object.keys(pkg.overrides ?? {});
+    expect(overridden.filter((name) => name.includes('tree-sitter'))).toEqual([]);
   });
 });
 
