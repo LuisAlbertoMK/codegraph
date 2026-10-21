@@ -192,8 +192,15 @@ export interface CodeGraphInsight {
   title: string;
   /** Structured content for Engram */
   content: string;
-  /** Insight type for Engram categorization */
-  type: 'symbol' | 'flow' | 'pattern' | 'architecture';
+  /**
+   * Insight kind, passed through to Engram as the observation's type.
+   *
+   * Only these two are emitted. A design-pattern or architecture insight would
+   * have to be guessed heuristically, and an unvalidated guess in project
+   * memory is worse than its absence — so the union no longer promises
+   * `pattern`/`architecture`, which nothing ever produced.
+   */
+  type: 'symbol' | 'flow';
   /** Project name (from cwd or explicit) */
   project: string;
   /** Symbol name */

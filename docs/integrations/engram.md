@@ -149,14 +149,13 @@ After each index/sync, CodeGraph extracts key insights and persists them to Engr
 
 - **symbol** — Top symbols by caller count and impact radius
 - **flow** — Call paths through central symbols
-- **pattern** — Detected design patterns (future)
-- **architecture** — High-level architectural insights (future)
+
+Those are the only two. Design-pattern and architecture insights would have to be inferred heuristically; a guess in project memory is worse than its absence, so the idea was dropped rather than left half-built.
 
 ### Extraction Criteria
 
-- Minimum 3 callers (direct)
-- Minimum 5 nodes in impact radius
-- Maximum 50 insights per sync (configurable)
+- Minimum callers and impact radius — see [What gets remembered](#what-gets-remembered) (defaults: 3 callers, 5 nodes in the depth-2 impact radius)
+- Maximum insights per sync — see [What gets remembered](#what-gets-remembered) (default 30, ceiling 200)
 - Confidence score based on caller count + impact radius
 
 ### Extraction performance
