@@ -38,6 +38,18 @@ export ENGRAM_RETRY_ATTEMPTS=3  # total attempts per request (default: 3; 1 disa
 export CODEGRAPH_MCP_TOOLS=explore,memory_search,explore_with_memory  # expose memory tools (default: explore only)
 ```
 
+### What gets remembered
+
+After indexing, the sync records a symbol only if it clears two bars: at least **3 callers** and an **impact radius of 5** nodes within two hops. The defaults suit a mid-size repo; what is worth remembering is not the same everywhere, so both bars and the list size are per-project env settings:
+
+```bash
+export CODEGRAPH_ENGRAM_MAX_INSIGHTS=30  # total per sync, flow insights included (default: 30, max 200)
+export CODEGRAPH_ENGRAM_MIN_CALLERS=3    # callers a symbol needs (default: 3, 0 = no bar)
+export CODEGRAPH_ENGRAM_MIN_IMPACT=5     # nodes in its depth-2 impact radius (default: 5, 0 = no bar)
+```
+
+A small service whose busiest function has two callers records nothing at the defaults — lower both bars there. A very large repo should raise `minCallers` instead: the cap already bounds how much memory a sync writes, and a higher bar means the slots go to the hubs rather than to near-leaf helpers. An unset, malformed, or out-of-range value falls back to the default rather than failing the sync.
+
 ### Disable Engram Sync
 
 ```bash

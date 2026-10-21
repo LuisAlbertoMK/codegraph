@@ -139,7 +139,7 @@ export interface CodeGraphInsight {
 }
 
 export interface ExtractOptions {
-  /** Maximum number of insights to extract (default: 50) */
+  /** Maximum number of insights to extract (default: 30) */
   maxInsights?: number;
   /** Minimum caller count to include (default: 3) */
   minCallers?: number;
@@ -149,6 +149,57 @@ export interface ExtractOptions {
   project?: string;
   /** Whether to include flow insights (default: true) */
   includeFlows?: boolean;
+}
+
+/** The three numbers that decide which symbols become memory. */
+export type InsightLimits = Required<Pick<ExtractOptions, 'maxInsights' | 'minCallers' | 'minImpact'>>;
+
+/**
+ * Default selection limits: a symbol earns a memory when at least 3 places
+ * call it and it reaches 5 nodes within two hops.
+ *
+ * These are a starting point, not a law — the extraction cost is one depth-2
+ * walk per candidate, so the numbers trade memory size against extraction
+ * time, and what counts as "worth remembering" differs by repo shape. A small
+ * service where the top function has two callers produces NOTHING at the
+ * defaults and should lower them; a huge repo should raise `minCallers`
+ * rather than pay for a list of near-leaf helpers. Override through
+ * {@link readInsightLimitsFromEnv}.
+ */
+export const DEFAULT_INSIGHT_LIMITS: InsightLimits = { maxInsights: 30, minCallers: 3, minImpact: 5 };
+
+/**
+ * Upper bound on `maxInsights`, independent of what the environment asks for.
+ * Each candidate costs an impact walk, so an unbounded value turns one sync
+ * into a graph scan; 200 is well past any project whose top symbols are all
+ * worth recalling.
+ */
+const MAX_INSIGHTS_CEILING = 200;
+
+/**
+ * Selection limits from the environment, falling back per value.
+ *
+ * An unset, non-numeric, or out-of-range value falls back to the default
+ * instead of throwing: this runs inside the post-index hook, where a typo in
+ * an env var must not cost the user their index. `maxInsights` is clamped to
+ * {@link MAX_INSIGHTS_CEILING}; the thresholds are clamped only at 0, which is
+ * a legitimate "no bar" (every symbol, up to `maxInsights`).
+ */
+export function readInsightLimitsFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): InsightLimits {
+  const read = (name: string, fallback: number, min: number, max: number): number => {
+    const raw = env[name]?.trim();
+    if (!raw) return fallback;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < min) return fallback;
+    return Math.min(value, max);
+  };
+  return {
+    maxInsights: read('CODEGRAPH_ENGRAM_MAX_INSIGHTS', DEFAULT_INSIGHT_LIMITS.maxInsights, 1, MAX_INSIGHTS_CEILING),
+    minCallers: read('CODEGRAPH_ENGRAM_MIN_CALLERS', DEFAULT_INSIGHT_LIMITS.minCallers, 0, 1_000),
+    minImpact: read('CODEGRAPH_ENGRAM_MIN_IMPACT', DEFAULT_INSIGHT_LIMITS.minImpact, 0, 100_000),
+  };
 }
 
 // ============================================================================
@@ -171,9 +222,9 @@ export async function extractInsights(
   options: ExtractOptions = {}
 ): Promise<CodeGraphInsight[]> {
   const {
-    maxInsights = 50,
-    minCallers = 3,
-    minImpact = 5,
+    maxInsights = DEFAULT_INSIGHT_LIMITS.maxInsights,
+    minCallers = DEFAULT_INSIGHT_LIMITS.minCallers,
+    minImpact = DEFAULT_INSIGHT_LIMITS.minImpact,
     project = process.cwd().split(/[\\/]/).pop() || 'unknown',
     includeFlows = true,
   } = options;
@@ -292,7 +343,14 @@ export async function extractInsights(
       if (insight !== undefined && entry !== undefined) flowInputs.push({ insight, node: entry.node });
     }
     const flowInsights = await extractFlowInsights(graph, flowInputs, project);
-    insights.push(...flowInsights);
+    // `maxInsights` is the size of the whole list, flows included. They share
+    // the budget instead of riding on top of it (they used to: a run capped at
+    // 30 posted up to 35). Flows come first because they are the part worth
+    // most when the budget is tiny; the symbols they were built from are the
+    // ones dropped, since the flow carries the same identity.
+    const flowBudget = Math.min(flowInsights.length, maxInsights);
+    const symbolBudget = Math.max(0, maxInsights - flowBudget);
+    return [...insights.slice(0, symbolBudget), ...flowInsights.slice(0, flowBudget)];
   }
 
   return insights;

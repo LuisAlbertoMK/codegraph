@@ -2728,14 +2728,14 @@ export class CodeGraph {
    */
   async syncInsightsToEngram(): Promise<void> {
     try {
-      const { extractInsights, syncInsightsToEngram: sync } = await import('./integrations/engram-sync');
+      const { extractInsights, readInsightLimitsFromEnv, syncInsightsToEngram: sync } = await import('./integrations/engram-sync');
       const project = this.getProjectRoot().split(/[\\/]/).pop() || 'unknown';
 
       console.error(`[codegraph] Extracting insights for Engram sync (project: ${project})...`);
+      // Defaults live with the extractor; what to remember differs by repo, so
+      // the three limits are overridable per project via CODEGRAPH_ENGRAM_*.
       const insights = await extractInsights(this, {
-        maxInsights: 30,
-        minCallers: 3,
-        minImpact: 5,
+        ...readInsightLimitsFromEnv(),
         project,
         includeFlows: true,
       });
