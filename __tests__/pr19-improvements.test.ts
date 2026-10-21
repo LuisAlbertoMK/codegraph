@@ -278,7 +278,10 @@ export function funcC(): void { console.log('c'); }
     expect(subgraph.nodes.has(funcB.id)).toBe(true);
 
     cg.destroy();
-  });
+    // A cold index of three files spends most of its time loading grammars and
+    // starting the parse worker, which on a loaded Windows host runs past the
+    // default 5s budget while the assertions themselves pass.
+  }, 30_000);
 });
 
 // =============================================================================
