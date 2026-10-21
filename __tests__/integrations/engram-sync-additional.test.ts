@@ -758,6 +758,52 @@ export { calc, proc, val };
       expect(seenQueries).toEqual(['nowhere']);
     });
 
+    // The trace is the only record of a search, so a fold that stays implicit
+    // cannot be told from a fold that never happened.
+    const traceLines = (dir: string): Array<Record<string, unknown>> =>
+      fs.readFileSync(path.join(dir, '.codegraph', 'engram-debug.jsonl'), 'utf8')
+        .split('\n')
+        .filter((line) => line.trim().length > 0)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    it('records the folded spelling the fallback asked for', async () => {
+      const { url, close } = await accentServer([
+        { title: 'Decision log', content: 'we chose the decision to batch the writes', rank: -5.0, type: 'decision' },
+      ]);
+      const traceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'engram-trace-accent-'));
+      try {
+        await searchEngramMemory('decisión', {
+          engramUrl: url,
+          project: 'fallback-trace-accent',
+          rootDir: traceDir,
+        });
+        const line = traceLines(traceDir).find((e) => e.event === 'memory.search');
+        expect(line?.fallback).toBe(true);
+        expect(line?.variants).toEqual(['decisión', 'decision']);
+      } finally {
+        await close();
+        fs.rmSync(traceDir, { recursive: true, force: true });
+      }
+    });
+
+    it('records no spellings when the fallback asked for none', async () => {
+      const traceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'engram-trace-plain-'));
+      try {
+        await searchEngramMemory('nowhere', {
+          engramUrl: andUrl,
+          project: 'fallback-trace-plain',
+          rootDir: traceDir,
+        });
+        const line = traceLines(traceDir).find((e) => e.event === 'memory.search');
+        // The lone plain term went out only as the strict query, so reporting
+        // it under `variants` would invent a request that never happened.
+        expect(line?.variants).toEqual([]);
+        expect(line?.fallback).toBe(true);
+      } finally {
+        fs.rmSync(traceDir, { recursive: true, force: true });
+      }
+    });
+
     it('counts two spellings of one term as one when ranking', async () => {
       // 'Accented memory' matches only the first term, through both spellings;
       // 'Cross memory' really matches two different terms. Counting fetches

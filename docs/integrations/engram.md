@@ -108,12 +108,13 @@ starved by an earlier term's hits.
 
 **Accents:** Engram indexes `decisión` and `decision` as different words
 (measured: `integración` answers 5 rows, `integracion` answers 0), and its
-`/search` takes no query syntax — no `OR`, no quoting, no wildcards. Both the
-strict query and the per-term fallback therefore ask for an accented term twice,
-as written and folded, and count the two spellings as one query term when
-ranking. That covers an accented query reaching a plainly spelled memory; an
-unaccented query still cannot reach an accented memory, which needs folding at
-index time on the server.
+`/search` takes no query syntax — no `OR`, no quoting, no wildcards. The
+strict query is one AND over the terms as written, so it adds nothing here; the
+per-term fallback asks for an accented term twice, as written and folded, and
+counts the two spellings as one query term when ranking. The spellings it sent
+are recorded as `variants` in the trace. That covers an accented query reaching
+a plainly spelled memory; an unaccented query still cannot reach an accented
+memory, which needs folding at index time on the server.
 
 ## Insight Extraction
 
@@ -188,7 +189,7 @@ Each line carries `ts`, `pid`, `event` and, wherever the caller can time it, `ms
 
 | event | what it records |
 |---|---|
-| `memory.search` | query, the terms actually sent (stopwords stripped), limit, project, `ok`/`status`/`error`, `count`, `ms` |
+| `memory.search` | query, the terms actually sent (stopwords stripped), `variants` (every spelling a per-word fallback asked for, so a folded retry is visible; empty when the fallback asked nothing, absent when it answered from cache), limit, project, `ok`/`status`/`error`, `count`, `ms` |
 | `memory.fetch` | a search request that did NOT answer 2xx (`status`, terms) — what separates "Engram said no" from "Engram is unreachable" |
 | `tool.memory_search` | the MCP call: `count`, `ms` |
 | `tool.explore_with_memory` | `exploreMs`, `memoryMs`, `totalMs`, `count`, `injected`, injected/explore chars |

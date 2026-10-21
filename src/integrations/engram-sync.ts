@@ -810,10 +810,10 @@ export async function searchEngramMemory(
       return orCached;
     }
 
-    const orResults = await fetchMemoryHitsOr(terms, limit, project, engramUrl, rootDir);
+    const { hits: orResults, asked } = await fetchMemoryHitsOr(terms, limit, project, engramUrl, rootDir);
     setCachedResults(orCacheKey, orResults);
     logEngram('memory.search', {
-      project, query, terms, limit, count: orResults.length, fallback: true, ms: elapsedMs(startedAt),
+      project, query, terms, variants: asked, limit, count: orResults.length, fallback: true, ms: elapsedMs(startedAt),
     }, rootDir);
     return orResults;
   } catch (err) {
@@ -845,6 +845,19 @@ function termVariants(term: string): string[] {
 }
 
 /**
+ * Per-term spellings an OR fallback asks Engram for: each term as written,
+ * plus its folded form when that differs. One derivation feeds both the
+ * fetches and the trace line, so the record cannot claim a spelling the
+ * search never sent.
+ */
+function memoryQueryVariants(terms: string): string[][] {
+  return terms
+    .split(/\s+/)
+    .filter((t) => t.length > 0)
+    .map(termVariants);
+}
+
+/**
  * Per-term (OR) retrieval, used only on a strict-AND miss. All single-term
  * fetches run in parallel (independent HTTP round trips — serially they
  * cost N× one trip), each fetching deeper than `limit` so the merge below —
@@ -859,7 +872,8 @@ function termVariants(term: string): string[] {
  * An accented term is asked for twice, as written and folded: the strict query
  * could not have matched a note spelled the other way, and neither could this
  * fallback before, so `decisión` answered nothing while `decision` answered
- * five rows.
+ * five rows. `asked` reports every spelling actually sent, so the trace shows
+ * the fold instead of leaving it implied.
  */
 async function fetchMemoryHitsOr(
   terms: string,
@@ -867,13 +881,15 @@ async function fetchMemoryHitsOr(
   project: string | undefined,
   engramUrl: string,
   rootDir?: string,
-): Promise<EngramMemoryHit[]> {
-  const singles = terms.split(/\s+/).filter((t) => t.length > 0);
-  if (singles.length === 0) return [];
-  const groups = singles.map(termVariants);
+): Promise<{ hits: EngramMemoryHit[]; asked: string[] }> {
+  const groups = memoryQueryVariants(terms);
+  if (groups.length === 0) return { hits: [], asked: [] };
   // A lone plain term was already asked for verbatim by the strict query;
   // repeating it by itself buys nothing.
-  if (groups.length === 1 && groups[0]!.length === 1) return [];
+  if (groups.length === 1 && groups[0]!.length === 1) return { hits: [], asked: [] };
+  // Every spelling sent, in query order, deduped: a repeated word must not
+  // read as a second request in the trace.
+  const asked = [...new Set(groups.flat())];
   // Depth per term comfortably above `limit` (never below 5): multi-match
   // rows ranked low in one term's list still reach the merge.
   const depth = Math.max(limit, 5);
@@ -908,8 +924,11 @@ async function fetchMemoryHitsOr(
     }
   }
   // Term count first (polarity-independent), then strongest-match-first.
-  return [...byKey.values()]
-    .sort((a, b) => b.terms.size - a.terms.size || a.hit.score - b.hit.score)
-    .slice(0, limit)
-    .map((e) => e.hit);
+  return {
+    hits: [...byKey.values()]
+      .sort((a, b) => b.terms.size - a.terms.size || a.hit.score - b.hit.score)
+      .slice(0, limit)
+      .map((e) => e.hit),
+    asked,
+  };
 }

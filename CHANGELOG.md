@@ -20,6 +20,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - CodeGraph can now integrate with Engram (persistent memory for AI agents) to enrich code exploration with project memory and automatically sync key insights after indexing. Enable with `CODEGRAPH_ENGRAM_ENABLED=1` and use `codegraph_explore_with_memory` to get code flow plus relevant project context in one call. The integration is non-blocking and gracefully degrades when Engram is unavailable, and retries a transient failure within the same timeout window instead of giving up on the first blip, reporting how many syncs needed one.
 - Project memory is now searchable on its own through the CodeGraph server: the new `codegraph_memory_search` tool recalls past decisions and insights from Engram, so agents no longer need a second MCP server for memory.
 - Every Engram call now leaves a timestamped, timed trace (`.codegraph/engram-debug.jsonl`) covering memory searches, insight extraction and each sync request, so a slow or unreachable Engram can be diagnosed instead of looking identical to "no matching memory". Turn it off with `CODEGRAPH_ENGRAM_DEBUG=0`.
+- The Engram trace now records every spelling a memory search asked for, so a folded word — a query typed with accents reaching memory written without them — is visible in the record instead of implied.
 - The automatic post-index insight sync runs faster on large repos by scoring a candidate pool with level-batched impact walks instead of walking the whole graph node by node.
 
 ### Fixes
