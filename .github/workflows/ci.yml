@@ -1,0 +1,60 @@
+name: CI
+
+# The fork this branch lives in had no test workflow, so nothing verified a
+# change beyond the machine that wrote it. This runs the same three steps a
+# contributor runs by hand: typecheck, build (the CLI and the test suites both
+# read from dist/), then the full vitest run.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A superseded run on the same ref has nothing to say: cancel it.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # The suite is large (two vitest projects, engine + viewer). Long is fine;
+    # silent is not — a job that hangs should fail, not hold the queue.
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 22 is the floor the bundled runtime ships and the first line with
+      # node:sqlite, which the database layer requires.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      # Explicit list so the log shows which project failed, and so a viewer
+      # regression is not hidden inside an engine failure.
+      - name: Test
+        run: npx vitest run --project engine --project ui
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 3
+          if-no-files-found: ignore
