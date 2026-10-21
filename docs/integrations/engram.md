@@ -97,6 +97,15 @@ Direct recall over persistent memory — no code flow. Pairs with `codegraph_exp
 2. Returns titled memories with type and score
 3. Returns gracefully (never errors) when Engram is unavailable or nothing matches
 
+**Memory search cache:** answers are cached per backend server, project,
+query and result count for 60 seconds, so repeated questions in a session
+don't hit Engram again. Strict misses fall back to per-term retrieval under
+its own cache entry, keeping fresh strict matches discoverable. The per-term
+fetches run in parallel and merge preferring rows that match more of the
+query (then strongest-match-first, following the server's own ranking:
+more negative rank wins), so a row only a later term matches is never
+starved by an earlier term's hits.
+
 ## Insight Extraction
 
 After each index/sync, CodeGraph extracts key insights and persists them to Engram:
@@ -115,14 +124,39 @@ After each index/sync, CodeGraph extracts key insights and persists them to Engr
 - Maximum 50 insights per sync (configurable)
 - Confidence score based on caller count + impact radius
 
+### Extraction performance
+
+Ranking walks a candidate pool (at most 100 by caller count) once and
+reuses each walk when building the final insights; node loading is a single
+query and only the first few impacted ids of each hub are sampled, skipping
+the hub itself (its own name is not a useful neighbor). Selection and counts
+are identical to walking everything twice — the ranking is pinned by tests
+against brute-force scoring, and tests pin that the focal symbol never
+appears among topImpacted.
+
 ### Deduplication
 
 Each insight carries a `deduplication_key`:
 ```
-codegraph:{project}:{qualified_name}
+codegraph:{project}:{file_path}:{qualified_name}
 ```
 
 Re-indexing updates existing observations instead of duplicating them.
+The file path is part of the key: a qualified name alone collides across
+definitions (two `Node` interfaces in different files would clobber each
+other on every sync).
+
+### Sync state
+
+Syncs after the first one skip insights whose content hash matches the
+local record in `.codegraph/engram-sync-state.json`, so steady-state syncs
+usually post nothing. Whether a synced insight counts as created or updated
+also comes from that record — the sync never re-checks with the server —
+so a first sync takes about one request per insight plus the session setup.
+Without a project root (stateless scripts and tests) there is no record and
+re-syncs count everything as created; the server still upserts by key, so no
+duplicates are stored.
+
 ## Diagnostics (trace)
 
 Every memory search, insight extraction, sync attempt and memory-aware tool call appends one JSON line to a bounded trace:
@@ -146,13 +180,14 @@ Each line carries `ts`, `pid`, `event` and, wherever the caller can time it, `ms
 | event | what it records |
 |---|---|
 | `memory.search` | query, the terms actually sent (stopwords stripped), limit, project, `ok`/`status`/`error`, `count`, `ms` |
+| `memory.fetch` | a search request that did NOT answer 2xx (`status`, terms) — what separates "Engram said no" from "Engram is unreachable" |
 | `tool.memory_search` | the MCP call: `count`, `ms` |
 | `tool.explore_with_memory` | `exploreMs`, `memoryMs`, `totalMs`, `count`, `injected`, injected/explore chars |
 | `extract.done` | nodes scanned, caller candidates, scored pool, insights produced, `ms` |
 | `sync.start` | insights offered vs posted, skipped (hash unchanged), state entries, `stateMs` |
 | `sync.session`, `sync.post` | per-request `status`/`attempts`/`pid`/`ms`, keyed by insight |
-| `sync.done` | `created`/`updated`/`failed`/`skipped`/`retried` plus `sessionMs`, `postMs`, `revisionMs`, `ms` |
-| `hook.sync` | the post-index hook: `trigger` (`index`/`sync`), totals, `ms` |
+| `sync.done` | `created`/`updated`/`failed`/`skipped`/`retried` plus `sessionMs`, `postMs`, `ms` |
+| `hook.sync` | the post-index hook: `trigger` (`index`/`sync`/`manual`), totals, `ms` |
 
 Knobs:
 
@@ -176,7 +211,7 @@ The trace never throws: a full disk, a locked file or a missing directory must n
 
 - Average explore latency: 2255ms (normal explore in the same run: 2115ms)
 - Memory enrichment overhead: ~35ms on the real MCP path (`benchmark-mcp-memory.mjs`); CLI-proxy measurement: 140ms (6.6%)
-- Insight sync: ~2.5s for 30 insights on a 10k-file repo (batched impact walks, non-blocking fire-and-forget)
+- Insight sync: ~2.5s for 30 insights on a 10k-file repo (batched impact walks, non-blocking fire-and-forget; first syncs now take about one request per insight with no per-insight re-check, and steady-state syncs skip unchanged insights)
 
 See `docs/benchmarks/engram-integration-baseline.json` and `docs/benchmarks/engram-integration-post-implementation.json` for full results.
 
@@ -229,9 +264,9 @@ node scripts/benchmark-mcp-memory.mjs
 The hook is non-blocking (fire-and-forget) and never fails the sync:
 
 ```typescript
-// In sync() and indexAll()
+// In indexAll() and sync() — the trigger is passed through to the trace
 if (process.env.CODEGRAPH_ENGRAM_ENABLED === '1') {
-  this.syncInsightsToEngram().catch(() => { /* never fail sync over Engram */ });
+  this.syncInsightsToEngram('index').catch(() => { /* never fail index over Engram */ });
 }
 ```
 
@@ -244,7 +279,7 @@ If Engram is unavailable:
 
 ### Retries
 
-A transient failure is retried within the SAME `ENGRAM_TIMEOUT_MS` window — a dropped connection, a server error (5xx), or rate limiting (429). The per-attempt timeout is capped by what is left of the window, so retrying can never make a dead Engram slower: a hung server still issues exactly one request and gives up at `ENGRAM_TIMEOUT_MS`. A 4xx is never retried (the same request fails the same way). Repeated POSTs are safe because Engram upserts on the insight's deduplication key. Tune with `ENGRAM_RETRY_ATTEMPTS` (default 3, backoff 100ms→500ms with full jitter).
+A transient failure is retried within the SAME `ENGRAM_TIMEOUT_MS` window — a dropped connection, a server error (5xx), or rate limiting (429). The per-attempt timeout is capped by what is left of the window, so retrying can never make a dead Engram slower: a hung server still issues exactly one request and gives up at `ENGRAM_TIMEOUT_MS`. A 4xx is never retried (the same request fails the same way). Repeated POSTs are safe because Engram upserts on the insight's deduplication key. Tune with `ENGRAM_RETRY_ATTEMPTS` (default 3, backoff 100ms→500ms with full jitter). A POST that needed more than one attempt is counted in the sync result's `retried`, so a reader of the created/updated split knows it may have drifted (the server may already have processed the attempt that timed out; the data is still one observation, upserted).
 
 ## Future Work
 

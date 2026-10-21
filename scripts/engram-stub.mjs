@@ -162,7 +162,9 @@ const server = createServer((req, res) => {
       results = results.filter(o => o.project === project);
     }
 
-    // Simple relevance scoring (matches Engram's FTS5 conceptually)
+    // Relevance scoring mirrors the real API's FTS5 polarity: negative
+    // ranks, more negative = stronger match, best-first. A row matching
+    // more terms ranks stronger, like the real multi-term accumulation.
     if (query) {
       const terms = query.split(/\s+/).filter(Boolean);
       results = results
@@ -170,12 +172,12 @@ const server = createServer((req, res) => {
           let rank = 0;
           const searchable = `${o.title} ${o.content} ${o.type}`.toLowerCase();
           for (const term of terms) {
-            if (searchable.includes(term)) rank += 1;
+            if (searchable.includes(term)) rank -= 1;
           }
           return { ...o, rank };
         })
-        .filter(o => o.rank > 0)
-        .sort((a, b) => b.rank - a.rank);
+        .filter(o => o.rank < 0)
+        .sort((a, b) => a.rank - b.rank);
     } else {
       // No query: most recent first
       results.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));

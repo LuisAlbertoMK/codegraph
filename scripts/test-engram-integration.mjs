@@ -53,7 +53,7 @@ async function main() {
   console.log('\n[test] Testing deduplication (sync again)...');
   const syncResult2 = await syncInsightsToEngram(insights, ENGRAM_URL);
   console.log(`[test] Dedup result: ${syncResult2.created} created, ${syncResult2.updated} updated, ${syncResult2.failed} failed`);
-  console.log('[test] Expect: 0 created, all updated');
+  console.log('[test] Expect: totals match (stateless mode counts re-posts as created; server upserts by key, no duplicates)');
 
   await cg.close();
   console.log('\n[test] Complete!');

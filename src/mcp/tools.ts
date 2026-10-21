@@ -7714,10 +7714,11 @@ export class ToolHandler {
    * with relevant project memory from Engram (persistent memory).
    *
    * Strategy:
-   * 1. Call normal handleExplore to get code flow
-   * 2. If includeMemory=true, search Engram for relevant context
-   * 3. Prepend memory section to explore output
-   * 4. Gracefully degrade if Engram is unavailable
+   * 1. Run normal explore and the Engram lookup CONCURRENTLY (they are
+   *    independent: the memory query needs only the raw query + project,
+   *    both known up front). Wall-clock is max(explore, memory), not the sum.
+   * 2. Prepend memory section to explore output
+   * 3. Gracefully degrade if Engram is unavailable
    */
   private async handleExploreWithMemory(args: Record<string, unknown>): Promise<ToolResult> {
     const rawQuery = this.validateString(args.query, 'query');
@@ -7727,28 +7728,57 @@ export class ToolHandler {
     const traceRoot = (args.projectPath as string | undefined) ?? process.cwd();
     const startedAt = startTimer();
 
-    // Call normal explore first
-    const exploreStartedAt = startTimer();
-    const exploreResult = await this.handleExplore(args);
-    const exploreMs = elapsedMs(exploreStartedAt);
-
     // Check if memory enrichment is requested
     const includeMemory = (args.includeMemory as boolean) ?? true;
     if (!includeMemory) {
+      const exploreStartedAt = startTimer();
+      const exploreResult = await this.handleExplore(args);
       logEngram('tool.explore_with_memory', {
-        query: rawQuery, includeMemory: false, exploreMs, memoryMs: 0, totalMs: elapsedMs(startedAt),
+        query: rawQuery, includeMemory: false, exploreMs: elapsedMs(exploreStartedAt), memoryMs: 0, totalMs: elapsedMs(startedAt),
       }, traceRoot);
       return exploreResult;
     }
 
-    // Try to get memory from Engram (non-blocking, graceful degradation)
-    try {
-      const { searchEngramMemory } = await import('../integrations/engram-sync');
-      const project = this.resolveEngramProject(args);
-      const memoryStartedAt = startTimer();
-      const memory = await searchEngramMemory(rawQuery, { limit: 3, project, rootDir: traceRoot });
-      const memoryMs = elapsedMs(memoryStartedAt);
+    // Try to get memory from Engram (non-blocking, graceful degradation).
+    // Launched alongside explore: independent inputs, so no reason to serialize.
+    const project = this.resolveEngramProject(args);
+    const memoryPromise = (async () => {
+      try {
+        const { searchEngramMemory } = await import('../integrations/engram-sync');
+        return await searchEngramMemory(rawQuery, { limit: 3, project, rootDir: traceRoot });
+      } catch {
+        return [];
+      }
+    })();
 
+    // Each leg is timed separately: "the answer took 3s" is not actionable
+    // until the trace says which leg spent them.
+    const exploreStartedAt = startTimer();
+    let memoryMs = 0;
+    const memoryLegStartedAt = startTimer();
+    const [exploreResult, memory] = await Promise.all([
+      this.handleExplore(args),
+      // Deadline for the memory leg: a hung Engram settles the lookup only
+      // via fetch abort after the full fetch timeout (10s). Race it so a hang
+      // holds explore at most MEMORY_LEG_TIMEOUT_MS. Real memory hits measured
+      // <=2.4s, so 3s preserves them. memoryPromise never rejects (catches
+      // all), so the race loser settling late is harmless.
+      (() => {
+        const MEMORY_LEG_TIMEOUT_MS = 3000;
+        let legTimer: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<never[]>((resolve) => {
+          legTimer = setTimeout(() => resolve([]), MEMORY_LEG_TIMEOUT_MS);
+          (legTimer as unknown as { unref?: () => void }).unref?.();
+        });
+        return Promise.race([memoryPromise, deadline]).finally(() => {
+          clearTimeout(legTimer);
+          memoryMs = elapsedMs(memoryLegStartedAt);
+        });
+      })(),
+    ]);
+    const exploreMs = elapsedMs(exploreStartedAt);
+
+    try {
       if (memory.length === 0) {
         logEngram('tool.explore_with_memory', {
           query: rawQuery, project, exploreMs, memoryMs, totalMs: elapsedMs(startedAt), count: 0, injected: false,
@@ -7800,8 +7830,9 @@ export class ToolHandler {
       // Graceful degradation: return normal explore if Engram fails
       logEngram('tool.explore_with_memory', {
         query: rawQuery,
-        project: this.resolveEngramProject(args),
+        project,
         exploreMs,
+        memoryMs,
         totalMs: elapsedMs(startedAt),
         error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
       }, traceRoot);

@@ -20,6 +20,52 @@ import { join } from 'node:path';
 import { describeError, elapsedMs, logEngram, startTimer } from './engram-log';
 
 // ============================================================================
+// Memory Cache (session-level, avoids repeated Engram calls for same query)
+// ============================================================================
+
+interface CacheEntry<T> {
+  results: T;
+  timestamp: number;
+}
+
+/**
+ * Simple in-memory cache for Engram search results.
+ * - Key: backend URL + project + normalized query + limit. A key without
+ *   the URL serves one backend's rows for another and masks outages.
+ * - TTL: 60 seconds (balances freshness vs. performance)
+ * - Auto-expires: entries older than TTL are ignored
+ * - Session-only: cleared when process exits (or via clearMemoryCache)
+ */
+const MEMORY_CACHE_TTL_MS = 60_000;
+const memoryCache = new Map<string, CacheEntry<Array<{ title: string; content: string; score: number; type: string }>>>();
+
+function getCacheKey(project: string | undefined, query: string, engramUrl: string, limit: number): string {
+  return `${engramUrl}\n${project || 'all'}:${query.toLowerCase().trim()}:${limit}`;
+}
+
+/**
+ * Drop all cached Engram search results. Tests call this to isolate cases
+ * that reuse a project/query against different backends.
+ */
+export function clearMemoryCache(): void {
+  memoryCache.clear();
+}
+
+function getCachedResults(key: string): Array<{ title: string; content: string; score: number; type: string }> | null {
+  const entry = memoryCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > MEMORY_CACHE_TTL_MS) {
+    memoryCache.delete(key);
+    return null;
+  }
+  return entry.results;
+}
+
+function setCachedResults(key: string, results: Array<{ title: string; content: string; score: number; type: string }>): void {
+  memoryCache.set(key, { results, timestamp: Date.now() });
+}
+
+// ============================================================================
 // Types
 // ============================================================================
 
@@ -96,17 +142,10 @@ export async function extractInsights(
     includeFlows = true,
   } = options;
 
-  // The trace belongs to the project being indexed, so a reader can tell which
-  // repository an extraction belonged to without cross-referencing the timestamp.
-  let traceRoot: string | undefined;
-  try { traceRoot = graph.getProjectRoot(); } catch { /* not open: no root to log into */ }
-  const startedAt = startTimer();
-
-  // Get all code-bearing nodes
-  const allNodes = graph.getNodesByKind('function')
-    .concat(graph.getNodesByKind('method'))
-    .concat(graph.getNodesByKind('class'))
-    .concat(graph.getNodesByKind('interface'));
+  // All code-bearing nodes in one IN query instead of four scans. The rows
+  // come back interleaved rather than grouped by kind, but stage 1 sorts
+  // deterministically below, so the order changes nothing downstream.
+  const allNodes = graph.getNodesByKinds(['function', 'method', 'class', 'interface']);
 
   // Two-stage ranking: a caller lookup is cheap (~0.15ms) while the depth-2
   // impact walk is ~10x costlier and dominates extraction on large repos.
@@ -137,12 +176,15 @@ export async function extractInsights(
 
   // Score centrality for the pool only. Batched membership: one handful of
   // round trips per node instead of one per walk step (~3.2x measured).
-  const scored: Array<{ node: Node; callerCount: number; impactCount: number; score: number }> = [];
+  // The impact set travels with the score: the build step below reuses it
+  // instead of re-walking the same nodes (the walk dominates extraction).
+  const scored: Array<{ node: Node; callerCount: number; impactCount: number; impactIds: Set<string>; score: number }> = [];
   for (const { node, callerCount } of byCallers.slice(0, poolSize)) {
-    const impactCount = graph.getImpactIdsBatched(node.id, 2).size;
+    const impactIds = graph.getImpactIdsBatched(node.id, 2);
+    const impactCount = impactIds.size;
     if (impactCount < minImpact) continue;
     const score = callerCount * Math.log(impactCount + 1);
-    scored.push({ node, callerCount, impactCount, score });
+    scored.push({ node, callerCount, impactCount, impactIds, score });
   }
 
   // Sort by score descending (identity tie-break — see above)
@@ -158,18 +200,28 @@ export async function extractInsights(
   // across definitions (two `Node` interfaces in different files share one
   // key and clobber each other on every sync). filePath+name is stable
   // across re-indexes (raw node ids are not — never key on those).
-  for (const { node, callerCount, impactCount } of top) {
+  for (const { node, callerCount, impactCount, impactIds } of top) {
     // Caller names only for the final top-N — one cheap lookup each.
-    // Impacted names via batched membership + a 5-row fetch (focal first, as
-    // before). Sample order follows BFS discovery (was DFS) — names only.
+    // Impacted names reuse the scoring walk above (same Set object, so the
+    // sample order is identical to re-walking) + a 5-row fetch. First-5 via
+    // iterator: a hub's depth-2 set can hold thousands of ids and only 5 are
+    // kept — spreading it all just to slice is pure garbage. The focal id
+    // leads the set (platform convention: impact includes self, same as
+    // explore/viewer counts) but is skipped here: it is not an "impacted"
+    // neighbor, and its own name would pollute the searchable text.
     const callers = graph.getCallers(node.id, 1);
-    const impactSample = [...graph.getImpactIdsBatched(node.id, 2)].slice(0, 5);
-    const impactNodes = impactSample.length > 1 ? graph.getNodesByIds(impactSample.slice(1)) : new Map<string, Node>();
+    const impactSample: string[] = [];
+    for (const id of impactIds) {
+      if (id === node.id) continue;
+      if (impactSample.length >= 5) break;
+      impactSample.push(id);
+    }
+    const impactNodes = impactSample.length > 0 ? graph.getNodesByIds(impactSample) : new Map<string, Node>();
     const topCallers = callers
       .slice(0, 5)
       .map(c => c.node.name);
 
-    const topImpacted = impactSample.map((id, i) => i === 0 ? node.name : impactNodes.get(id)?.name ?? id);
+    const topImpacted = impactSample.map((id) => impactNodes.get(id)?.name ?? id);
 
     const confidence = Math.min(1, (callerCount / 20) + (impactCount / 50));
 
@@ -206,16 +258,6 @@ export async function extractInsights(
     const flowInsights = await extractFlowInsights(graph, flowInputs, project);
     insights.push(...flowInsights);
   }
-
-  logEngram('extract.done', {
-    project,
-    nodes: allNodes.length,
-    callerCandidates: byCallers.length,
-    scored: scored.length,
-    pool: poolSize,
-    insights: insights.length,
-    ms: elapsedMs(startedAt),
-  }, traceRoot);
 
   return insights;
 }
@@ -333,9 +375,6 @@ async function ensureSyncSession(engramUrl: string, project: string, rootDir?: s
  * Engram HTTP timeout (ms). A hung Engram (socket accepted, never responds)
  * must never stall the fire-and-forget post-index chain — it only delays
  * background memory, never indexing. Override with ENGRAM_TIMEOUT_MS.
- *
- * This is also the RETRY BUDGET: retries share this same window, so retrying
- * a flaky Engram can never make a dead one slower than one attempt already was.
  */
 function getEngramTimeoutMs(): number {
   const raw = parseInt(process.env.ENGRAM_TIMEOUT_MS || '10000', 10);
@@ -561,45 +600,21 @@ export async function syncInsightsToEngram(
     }
   });
 
-  // Same deduplication key upserts the same id: first revision counts as
-  // created, later ones as updated. Revision lookup only for ids never seen
-  // (plus in-run first-seen); state-known keys count as updated directly.
-  // Caveat surfaced by `retried` below: a first-seen POST that the server had
-  // already processed before our attempt timed out reads back as
-  // revision_count >= 2, so it lands in `updated`, not `created`. The data is
-  // right (one observation, upserted); only the created/updated split drifts.
+  // Same deduplication key upserts the same id: a key the pre-sync local
+  // state already knew counts as updated, a first-seen key as created. The
+  // counts are observability only — server-side dedup by deduplication_key
+  // stays correct regardless — so no revision GETs: trusting local state
+  // drops N round-trips per sync (roughly half the requests on first syncs).
   const runtimeSeen = new Map(state);
-  const checkIdx: number[] = [];
-  let updatedKnown = 0;
-  posted.forEach((p, i) => {
-    if (!p.ok) return;
-    if (runtimeSeen.has(p.key)) updatedKnown++;
-    else checkIdx.push(i);
-  });
-
-  const revisionStartedAt = startTimer();
-  const checked = await mapWithConcurrency(checkIdx, SYNC_CONCURRENCY, async (i) => {
-    const p = posted[i];
-    if (!p || !p.ok) return { created: false, key: null as string | null, id: null as number | string | null };
-    try {
-      const current = (await (await fetchWithRetry(`${engramUrl}/observations/${p.id}`)).json()) as { revision_count?: number; duplicate_count?: number };
-      const created = (current.revision_count ?? 1) <= 1 && (current.duplicate_count ?? 0) === 0;
-      return { created, key: p.key as string, id: p.id as number | string };
-    } catch {
-      return { created: false, key: p.key as string, id: p.id as number | string };
-    }
-  });
-
-  for (const c of checked) {
-    if (c.created) result.created++;
-    else result.updated++;
-    if (c.key !== null && c.id !== null) runtimeSeen.set(c.key, { id: c.id, hash: '' });
+  for (const p of posted) {
+    if (!p.ok) continue;
+    if (runtimeSeen.has(p.key)) result.updated++;
+    else result.created++;
   }
-  result.updated += updatedKnown;
   result.failed = posted.filter((p) => !p.ok).length;
   // Transparency, not a third outcome: how many POSTs needed more than one
-  // attempt, so a reader of the counts knows the created/updated split may
-  // have drifted (see the caveat above).
+  // attempt, so a reader of the counts knows a first-seen POST the server had
+  // already processed before our attempt timed out reads back as `updated`.
   result.retried = posted.filter((p) => p.ok && p.retried).length;
   // Record hashes for everything posted OK (plus keep skipped entries)
   posted.forEach((p, idx) => {
@@ -618,8 +633,6 @@ export async function syncInsightsToEngram(
     posted: toPost.length,
     sessionMs,
     postMs: elapsedMs(postStartedAt),
-    revisionChecks: checkIdx.length,
-    revisionMs: elapsedMs(revisionStartedAt),
     ms: elapsedMs(startedAt),
   }, traceRoot);
 
@@ -705,50 +718,160 @@ function memoryQueryTerms(query: string): string {
   return terms.length > 0 ? terms.join(' ') : query;
 }
 
+export interface EngramMemoryHit {
+  title: string;
+  content: string;
+  score: number;
+  type: string;
+}
+
+async function fetchMemoryHits(
+  terms: string,
+  limit: number,
+  project: string | undefined,
+  engramUrl: string,
+  rootDir?: string,
+): Promise<EngramMemoryHit[]> {
+  const params = new URLSearchParams({ q: terms, limit: String(limit) });
+  if (project) params.set('project', project);
+
+  const startedAt = startTimer();
+  const response = await fetchWithRetry(`${engramUrl}/search?${params}`);
+  if (!response.ok) {
+    // A non-2xx here looks identical to "no matching memory" in the tool
+    // output, which is why it gets its own trace line and status.
+    logEngram('memory.fetch', {
+      project, terms, limit, ok: false, status: response.status, ms: elapsedMs(startedAt),
+    }, rootDir);
+    return [];
+  }
+
+  // Real API returns a bare array of observations (rank doubles as score).
+  // Rows may carry nulls (session markers, imports) — coerce, never throw.
+  const data = (await response.json()) as Array<{ title: string; content: string; rank?: number; type: string }>;
+  return (Array.isArray(data) ? data : []).map((r) => ({
+    title: String(r.title ?? 'Untitled'),
+    content: String(r.content ?? ''),
+    score: r.rank ?? 0,
+    type: r.type || 'unknown',
+  }));
+}
+
 /**
  * Search Engram memory for context relevant to a query.
  *
  * Returns matching observations that can enrich explore results.
+ *
+ * Engram search is term-AND: every term must occur in the same row. Code
+ * queries (`authentication login`) use code vocabulary that often matches
+ * nothing in prose memory (`auth`, `test_auth_login`), so a strict miss
+ * falls back to per-term (OR) retrieval merged by score — bounded to `limit`
+ * and cached like the strict path. Extra fetches happen only on a miss.
  */
 export async function searchEngramMemory(
   query: string,
   options: { limit?: number; project?: string; engramUrl?: string; rootDir?: string } = {}
-): Promise<Array<{ title: string; content: string; score: number; type: string }>> {
+): Promise<EngramMemoryHit[]> {
   const { limit = 3, project, engramUrl = process.env.ENGRAM_URL || 'http://127.0.0.1:7437', rootDir } = options;
   const startedAt = startTimer();
-  const terms = memoryQueryTerms(query);
+
+  // Check cache first (keyed by backend + project + query + limit)
+  const cacheKey = getCacheKey(project, query, engramUrl, limit);
+  const cached = getCachedResults(cacheKey);
+  if (cached) {
+    logEngram('memory.search', {
+      project, query, limit, count: cached.length, cache: 'strict', ms: elapsedMs(startedAt),
+    }, rootDir);
+    return cached;
+  }
 
   try {
-    const params = new URLSearchParams({ q: terms, limit: String(limit) });
-    if (project) params.set('project', project);
-
-    const response = await fetchWithRetry(`${engramUrl}/search?${params}`);
-    if (!response.ok) {
-      // A non-2xx here looks identical to "no matching memory" in the tool
-      // output, which is why it gets its own trace line and status.
+    const terms = memoryQueryTerms(query);
+    const results = await fetchMemoryHits(terms, limit, project, engramUrl, rootDir);
+    if (results.length > 0) {
+      // Cache results
+      setCachedResults(cacheKey, results);
       logEngram('memory.search', {
-        project, query, terms, limit, ok: false, status: response.status, count: 0, ms: elapsedMs(startedAt),
+        project, query, terms, limit, count: results.length, fallback: false, ms: elapsedMs(startedAt),
       }, rootDir);
-      return [];
+      return results;
     }
 
-    // Real API returns a bare array of observations (rank doubles as score).
-    // Rows may carry nulls (session markers, imports) — coerce, never throw.
-    const data = (await response.json()) as Array<{ title: string; content: string; rank?: number; type: string }>;
-    const rows = Array.isArray(data) ? data : [];
+    // Fallback results live under their own key: caching them under the
+    // strict key would keep serving OR-merged rows for 60s even after new
+    // data arrives that matches the strict AND query. Strict empties stay
+    // uncached so a later strict hit is always discovered fresh.
+    const orCacheKey = `${cacheKey}${'\u0000'}or`;
+    const orCached = getCachedResults(orCacheKey);
+    if (orCached) {
+      logEngram('memory.search', {
+        project, query, limit, count: orCached.length, cache: 'or', fallback: true, ms: elapsedMs(startedAt),
+      }, rootDir);
+      return orCached;
+    }
+
+    const orResults = await fetchMemoryHitsOr(terms, limit, project, engramUrl, rootDir);
+    setCachedResults(orCacheKey, orResults);
     logEngram('memory.search', {
-      project, query, terms, limit, ok: true, status: response.status, count: rows.length, ms: elapsedMs(startedAt),
+      project, query, terms, limit, count: orResults.length, fallback: true, ms: elapsedMs(startedAt),
     }, rootDir);
-    return rows.map((r) => ({
-      title: String(r.title ?? 'Untitled'),
-      content: String(r.content ?? ''),
-      score: r.rank ?? 0,
-      type: r.type || 'unknown',
-    }));
+    return orResults;
   } catch (err) {
     logEngram('memory.search', {
-      project, query, terms, limit, ok: false, error: describeError(err), count: 0, ms: elapsedMs(startedAt),
+      project, query, limit, ok: false, error: describeError(err), count: 0, ms: elapsedMs(startedAt),
     }, rootDir);
     return [];
   }
+}
+
+/**
+ * Per-term (OR) retrieval, used only on a strict-AND miss. All single-term
+ * fetches run in parallel (independent HTTP round trips — serially they
+ * cost N× one trip), each fetching deeper than `limit` so the merge below —
+ * not the per-term cutoff — decides what survives. Rows are ranked by
+ * number of matched terms first (a row matching 2 of 3 terms outranks one
+ * matching 1), then by score; without this, the first term fills every slot
+ * and a row only the second term matches is never even fetched (starvation).
+ * Score polarity follows the server (FTS5 bm25: more negative = stronger
+ * match, best-first — verified live: multi-term strict hits rank more
+ * negative than any single-term hit): sort ascending. Bounded to `limit`.
+ */
+async function fetchMemoryHitsOr(
+  terms: string,
+  limit: number,
+  project: string | undefined,
+  engramUrl: string,
+  rootDir?: string,
+): Promise<EngramMemoryHit[]> {
+  const singles = terms.split(/\s+/).filter((t) => t.length > 0);
+  if (singles.length <= 1) return [];
+  // Depth per term comfortably above `limit` (never below 5): multi-match
+  // rows ranked low in one term's list still reach the merge.
+  const depth = Math.max(limit, 5);
+  const settled = await Promise.all(
+    singles.map((single) =>
+      fetchMemoryHits(single, depth, project, engramUrl, rootDir).catch((): EngramMemoryHit[] => [])
+    )
+  );
+
+  const byKey = new Map<string, { hit: EngramMemoryHit; terms: number }>();
+  for (const hits of settled) {
+    for (const h of hits) {
+      const key = `${h.title}\n${h.content.slice(0, 160)}`;
+      const entry = byKey.get(key);
+      if (entry) {
+        entry.terms += 1;
+        // Rank polarity follows the server (FTS5 bm25: more negative =
+        // stronger match): keep the row's strongest leg.
+        if (h.score < entry.hit.score) entry.hit = h;
+      } else {
+        byKey.set(key, { hit: h, terms: 1 });
+      }
+    }
+  }
+  // Term count first (polarity-independent), then strongest-match-first.
+  return [...byKey.values()]
+    .sort((a, b) => b.terms - a.terms || a.hit.score - b.hit.score)
+    .slice(0, limit)
+    .map((e) => e.hit);
 }
