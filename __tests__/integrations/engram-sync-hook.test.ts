@@ -276,4 +276,51 @@ export class UserController {
       await expect(cg.indexAll()).resolves.not.toThrow();
     });
   });
+
+  // =========================================================================
+  // stdout discipline
+  // =========================================================================
+
+  describe('stdout discipline', () => {
+    // The hook runs from sync(), which the MCP server calls to serve a project.
+    // In DIRECT mode (CODEGRAPH_NO_DAEMON=1) that process's stdout is the
+    // JSON-RPC channel, so a single log line there corrupts the protocol —
+    // measured with an isolated probe: two non-JSON lines on stdout before the
+    // initialize response. Diagnostics belong on stderr.
+    it('writes progress to stderr, never to stdout', async () => {
+      process.env.CODEGRAPH_ENGRAM_ENABLED = '1';
+      process.env.ENGRAM_URL = 'http://localhost:59999';
+
+      const stdoutWrites: string[] = [];
+      const originalStdoutWrite = process.stdout.write;
+      process.stdout.write = ((chunk: string | Uint8Array) => {
+        stdoutWrites.push(String(chunk));
+        return true;
+      }) as typeof process.stdout.write;
+      // Vitest intercepts console.* in-process, so assert the call itself too.
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      let logged = '';
+      let stdoutText = '';
+      let logCalls = 0;
+
+      try {
+        await cg.syncInsightsToEngram();
+        // Read the recorded calls BEFORE mockRestore(), which clears them.
+        logged = errorSpy.mock.calls.map((call) => String(call[0])).join('\n');
+        stdoutText = stdoutWrites.join('');
+        logCalls = logSpy.mock.calls.length;
+      } finally {
+        process.stdout.write = originalStdoutWrite;
+        errorSpy.mockRestore();
+        logSpy.mockRestore();
+      }
+
+      // Silence is the invariant: no [codegraph] line may reach stdout.
+      expect(stdoutText).not.toContain('[codegraph]');
+      expect(logCalls).toBe(0);
+      // ...and the diagnostics must still exist, on stderr.
+      expect(logged).toContain('[codegraph] Extracting insights');
+    });
+  });
 });

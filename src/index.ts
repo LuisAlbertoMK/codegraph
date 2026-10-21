@@ -2719,13 +2719,19 @@ export class CodeGraph {
    * Non-blocking: fire-and-forget from sync/index. Never throws.
    * Extracts top symbols by centrality and persists them to Engram
    * for cross-session recall.
+   *
+   * Progress goes to stderr, never stdout: this hook runs from `sync()`, and
+   * the MCP server serves a project by calling it — in DIRECT mode
+   * (`CODEGRAPH_NO_DAEMON=1`) this process's stdout IS the JSON-RPC channel,
+   * so a log line there corrupts the protocol. The daemon redirects both
+   * streams to `.codegraph/daemon.log`, so nothing changes on that path.
    */
   async syncInsightsToEngram(): Promise<void> {
     try {
       const { extractInsights, syncInsightsToEngram: sync } = await import('./integrations/engram-sync');
       const project = this.getProjectRoot().split(/[\\/]/).pop() || 'unknown';
 
-      console.log(`[codegraph] Extracting insights for Engram sync (project: ${project})...`);
+      console.error(`[codegraph] Extracting insights for Engram sync (project: ${project})...`);
       const insights = await extractInsights(this, {
         maxInsights: 30,
         minCallers: 3,
@@ -2735,12 +2741,12 @@ export class CodeGraph {
       });
 
       if (insights.length === 0) {
-        console.log('[codegraph] No insights to sync.');
+        console.error('[codegraph] No insights to sync.');
         return;
       }
 
       const result = await sync(insights, undefined, { rootDir: this.getProjectRoot() });
-      console.log(`[codegraph] Engram sync complete: ${result.created} created, ${result.updated} updated, ${result.skipped} unchanged, ${result.failed} failed.`);
+      console.error(`[codegraph] Engram sync complete: ${result.created} created, ${result.updated} updated, ${result.skipped} unchanged, ${result.failed} failed.`);
     } catch (err) {
       // Never fail sync/index over Engram
       console.error(`[codegraph] Engram sync failed: ${err}`);
