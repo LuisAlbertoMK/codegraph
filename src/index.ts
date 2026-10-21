@@ -2740,13 +2740,26 @@ export class CodeGraph {
         includeFlows: true,
       });
 
+      // Even with nothing to post the sync runs: an index that produced no
+      // insights is exactly when stale ones need pruning.
+      const result = await sync(insights, undefined, {
+        rootDir: this.getProjectRoot(),
+        project,
+        // Only 'deleted' vs 'alive' can be told apart by the graph owner: a
+        // symbol missing from one run's top-N is still alive. An empty index
+        // means no view at all, so pruning stays off rather than wiping memory.
+        stillExists: this.getStats().nodeCount > 0
+          ? (filePath: string, qualifiedName: string) =>
+              this.getNodesByQualifiedName(qualifiedName).some((node) => node.filePath === filePath)
+          : undefined,
+      });
+
       if (insights.length === 0) {
-        console.error('[codegraph] No insights to sync.');
+        console.error(`[codegraph] No insights to sync${result.pruned > 0 ? ` (pruned ${result.pruned} stale)` : ''}.`);
         return;
       }
 
-      const result = await sync(insights, undefined, { rootDir: this.getProjectRoot() });
-      console.error(`[codegraph] Engram sync complete: ${result.created} created, ${result.updated} updated, ${result.skipped} unchanged, ${result.failed} failed.`);
+      console.error(`[codegraph] Engram sync complete: ${result.created} created, ${result.updated} updated, ${result.skipped} unchanged, ${result.pruned} pruned, ${result.failed} failed.`);
     } catch (err) {
       // Never fail sync/index over Engram
       console.error(`[codegraph] Engram sync failed: ${err}`);

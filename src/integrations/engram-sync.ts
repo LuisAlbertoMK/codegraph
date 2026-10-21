@@ -514,6 +514,9 @@ async function fetchWithRetry(url: string, init: RequestInit = {}, onRetry?: () 
  */
 const SYNC_CONCURRENCY = 8;
 
+/** Per-run cap on deletions — see {@link pruneStaleInsights}. */
+const PRUNE_MAX_PER_RUN = 200;
+
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
@@ -532,28 +535,112 @@ async function mapWithConcurrency<T, R>(
 }
 
 /**
+ * Delete the observations of insights whose symbol no longer exists.
+ *
+ * Only entries carrying an identity can be checked (state v3+); older entries
+ * are left alone rather than guessed at. The caller supplies `stillExists`
+ * because only the graph owner can tell "the symbol is gone" from "it is not
+ * in this run's top N" — omitting it disables pruning entirely, so an
+ * unindexed root can never wipe a project's memory.
+ *
+ * The delete is Engram's soft delete, so a wrong prune stays recoverable.
+ */
+async function pruneStaleInsights(
+  state: Map<string, SyncStateEntry>,
+  stillExists: ((filePath: string, qualifiedName: string) => boolean) | undefined,
+  engramUrl: string,
+  project: string,
+  traceRoot?: string,
+): Promise<{ pruned: number; pruneFailed: number }> {
+  if (!stillExists) return { pruned: 0, pruneFailed: 0 };
+
+  const stale: Array<[string, SyncStateEntry]> = [];
+  for (const [key, entry] of state) {
+    if (!entry.filePath || !entry.qualifiedName) continue;
+    if (stillExists(entry.filePath, entry.qualifiedName)) continue;
+    stale.push([key, entry]);
+  }
+  if (stale.length === 0) return { pruned: 0, pruneFailed: 0 };
+
+  // Bounded so a large rename sweep cannot turn one sync into an unbounded
+  // burst of deletes; the next sync continues where this one stopped.
+  const batch = stale.slice(0, PRUNE_MAX_PER_RUN);
+  const outcomes = await mapWithConcurrency(batch, SYNC_CONCURRENCY, async ([key, entry]) => {
+    const itemStartedAt = startTimer();
+    try {
+      const response = await fetchWithRetry(
+        `${engramUrl}/observations/${encodeURIComponent(String(entry.id))}?expected_project=${encodeURIComponent(project)}`,
+        { method: 'DELETE' },
+      );
+      // 404 is the desired end state: already gone (deleted by hand, or a
+      // previous run whose state write did not land).
+      if (!response.ok && response.status !== 404) {
+        logEngram('sync.prune', { key, ok: false, status: response.status, ms: elapsedMs(itemStartedAt) }, traceRoot);
+        return false;
+      }
+      state.delete(key);
+      logEngram('sync.prune', { key, ok: true, status: response.status, ms: elapsedMs(itemStartedAt) }, traceRoot);
+      return true;
+    } catch (err) {
+      logEngram('sync.prune', { key, ok: false, error: describeError(err), ms: elapsedMs(itemStartedAt) }, traceRoot);
+      return false;
+    }
+  });
+
+  const pruned = outcomes.filter((ok) => ok).length;
+  const pruneFailed = outcomes.length - pruned;
+  if (pruned > 0) saveSyncState(traceRoot, state, true);
+  return { pruned, pruneFailed };
+}
+
+/**
  * Sync insights to Engram via HTTP.
  *
  * Uses the Engram HTTP API (POST /observations) with deduplication.
  * Failures are logged but never throw — insight sync must not break indexing.
+ *
+ * `options.stillExists` is the caller's view of the current graph. With it, a
+ * previously synced insight whose symbol is gone gets its observation deleted
+ * (soft delete — Engram keeps it recoverable) instead of lingering as memory
+ * about code that no longer exists. Without it nothing is pruned.
  */
 export async function syncInsightsToEngram(
   insights: CodeGraphInsight[],
   engramUrl: string = process.env.ENGRAM_URL || 'http://127.0.0.1:7437',
-  options: { rootDir?: string } = {}
-): Promise<{ created: number; updated: number; failed: number; skipped: number; retried: number }> {
-  const result = { created: 0, updated: 0, failed: 0, skipped: 0, retried: 0 };
-  if (insights.length === 0) return result;
+  options: {
+    rootDir?: string;
+    stillExists?: (filePath: string, qualifiedName: string) => boolean;
+    project?: string;
+  } = {}
+): Promise<{ created: number; updated: number; failed: number; skipped: number; retried: number; pruned: number; pruneFailed: number }> {
+  const result = { created: 0, updated: 0, failed: 0, skipped: 0, retried: 0, pruned: 0, pruneFailed: 0 };
 
-  const project = insights[0]?.project || 'codegraph';
+  // Called with an empty insight list (an index that produced none) the prune
+  // still runs: symbols that vanished are exactly the reason a run can be
+  // empty, and the live set is what gates it, not the insight count.
+  const project = options.project ?? insights[0]?.project ?? 'codegraph';
   const traceRoot = options.rootDir;
   const startedAt = startTimer();
 
   // Incremental sync: insights whose content hash matches local state skip
-  // the network entirely. State v2 stores {id, hash} per key; v1 states
-  // (ids only) sync once more to record hashes. State lives in .codegraph/
-  // (gitignored, per-project). Typical syncs post 0-3 changed insights.
+  // the network entirely. State v3 stores {id, hash, filePath, qualifiedName}
+  // per key; v2 (no identity) still syncs, it just cannot be pruned. State
+  // lives in .codegraph/ (gitignored, per-project). Typical syncs post 0-3
+  // changed insights.
   const state = loadSyncState(options.rootDir);
+
+  // Prune before the early returns: a repo whose insights never change is
+  // exactly the steady state where stale ones would otherwise sit forever.
+  Object.assign(
+    result,
+    await pruneStaleInsights(state, options.stillExists, engramUrl, project, traceRoot),
+  );
+
+  if (insights.length === 0) {
+    logEngram('sync.done', { project, ...result, ms: elapsedMs(startedAt) }, traceRoot);
+    return result;
+  }
+
   const toPost: CodeGraphInsight[] = [];
   for (const insight of insights) {
     const prev = state.get(insight.deduplication_key);
@@ -656,7 +743,14 @@ export async function syncInsightsToEngram(
   posted.forEach((p, idx) => {
     if (!p.ok) return;
     const ins = toPost[idx];
-    if (ins) runtimeSeen.set(p.key, { id: p.id, hash: insightHash(ins) });
+    if (ins) {
+      runtimeSeen.set(p.key, {
+        id: p.id,
+        hash: insightHash(ins),
+        filePath: ins.filePath,
+        qualifiedName: ins.qualifiedName,
+      });
+    }
   });
   saveSyncState(options.rootDir, runtimeSeen);
 
@@ -689,12 +783,19 @@ function insightHash(insight: CodeGraphInsight): string {
   return (h >>> 0).toString(36);
 }
 
-type SyncStateEntry = { id: number | string; hash: string };
+type SyncStateEntry = {
+  id: number | string;
+  hash: string;
+  /** Symbol identity for pruning (v3+). Absent on older entries. */
+  filePath?: string;
+  qualifiedName?: string;
+};
 
 /**
- * Previously synced entries for a project root. Missing, corrupt, or v1
- * state (ids without hashes) degrades gracefully: unknown hashes sync once
- * to record them. Never throws.
+ * Previously synced entries for a project root. Missing, corrupt, or older
+ * state (v1 ids without hashes, or v2 without symbol identity) degrades
+ * gracefully: unknown hashes sync once to record them, and entries with no
+ * identity are never pruned. Never throws.
  */
 function loadSyncState(rootDir?: string): Map<string, SyncStateEntry> {
   const out = new Map<string, SyncStateEntry>();
@@ -705,16 +806,22 @@ function loadSyncState(rootDir?: string): Map<string, SyncStateEntry> {
     ) as {
       version?: number;
       idsByKey?: Record<string, number | string>;
-      entries?: Record<string, { id?: number | string; hash?: string }>;
+      entries?: Record<string, { id?: number | string; hash?: string; filePath?: string; qualifiedName?: string }>;
     };
-    if (raw && raw.version === 2 && raw.entries && typeof raw.entries === 'object') {
+    if (raw && (raw.version === 2 || raw.version === 3) && raw.entries && typeof raw.entries === 'object') {
       for (const [k, v] of Object.entries(raw.entries)) {
         if (v && typeof v.hash === 'string' && (typeof v.id === 'number' || typeof v.id === 'string')) {
-          out.set(k, { id: v.id, hash: v.hash });
+          out.set(k, {
+            id: v.id,
+            hash: v.hash,
+            filePath: typeof v.filePath === 'string' ? v.filePath : undefined,
+            qualifiedName: typeof v.qualifiedName === 'string' ? v.qualifiedName : undefined,
+          });
         }
       }
     } else if (raw && raw.version === 1 && raw.idsByKey && typeof raw.idsByKey === 'object') {
-      // v1 → v2 migration: ids kept, empty hash forces one re-sync to record it
+      // v1 → current migration: ids kept, empty hash forces one re-sync to
+      // record it (and, with it, the identity pruning needs).
       for (const [k, v] of Object.entries(raw.idsByKey)) {
         if (typeof v === 'number' || typeof v === 'string') out.set(k, { id: v, hash: '' });
       }
@@ -723,13 +830,23 @@ function loadSyncState(rootDir?: string): Map<string, SyncStateEntry> {
   return out;
 }
 
-function saveSyncState(rootDir: string | undefined, entries: Map<string, SyncStateEntry>): void {
-  if (!rootDir || entries.size === 0) return;
+/**
+ * Persist the sync state. `allowEmpty` exists for the prune: an empty map
+ * there means "every synced insight is gone", which must be written — the
+ * default guard would leave the deleted keys on disk to be retried forever.
+ */
+function saveSyncState(
+  rootDir: string | undefined,
+  entries: Map<string, SyncStateEntry>,
+  allowEmpty = false,
+): void {
+  if (!rootDir) return;
+  if (entries.size === 0 && !allowEmpty) return;
   try {
     mkdirSync(join(rootDir, '.codegraph'), { recursive: true });
     writeFileSync(
       join(rootDir, '.codegraph', 'engram-sync-state.json'),
-      JSON.stringify({ version: 2, entries: Object.fromEntries(entries) })
+      JSON.stringify({ version: 3, entries: Object.fromEntries(entries) })
     );
   } catch { /* best-effort; stateless fallback keeps working */ }
 }

@@ -294,6 +294,12 @@ If Engram is unavailable:
 
 A transient failure is retried within the SAME `ENGRAM_TIMEOUT_MS` window — a dropped connection, a server error (5xx), or rate limiting (429). The per-attempt timeout is capped by what is left of the window, so retrying can never make a dead Engram slower: a hung server still issues exactly one request and gives up at `ENGRAM_TIMEOUT_MS`. A 4xx is never retried (the same request fails the same way). Repeated POSTs are safe because Engram upserts on the insight's deduplication key. Tune with `ENGRAM_RETRY_ATTEMPTS` (default 3, backoff 100ms→500ms with full jitter). A POST that needed more than one attempt is counted in the sync result's `retried`, so a reader of the created/updated split knows it may have drifted (the server may already have processed the attempt that timed out; the data is still one observation, upserted).
 
+### Pruning stale insights
+
+An insight that names a symbol the code no longer has is worse than a missing one: memory search keeps returning it, so an agent follows memory to a function that does not exist. After each sync the entries recorded in `.codegraph/engram-sync-state.json` are checked against the graph, and the observation of a symbol that is gone (deleted file, renamed function, removed class) is deleted with `DELETE /observations/<id>`, scoped to the project so it can never touch another project's memory. A 404 counts as already gone; a failed delete stays in the state file and is retried on the next sync.
+
+The check is identity, not ranking: an insight that merely fell out of this run's top 30 is still alive and is left alone. Pruning needs a graph view, so it is skipped when the index is empty — "no local view" must never be read as "everything was deleted". Only entries written by this version carry the file path and qualified name the check needs; older entries are left untouched until their insight is posted again.
+
 ## Future Work
 
 - [ ] Bi-directional sync (Engram → CodeGraph context)
