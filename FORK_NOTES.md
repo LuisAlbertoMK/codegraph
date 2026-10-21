@@ -29,3 +29,34 @@ The disable does **not** survive a rename or a delete-and-re-add of the workflow
 ```
 gh workflow list --all --repo LuisAlbertoMK/codegraph
 ```
+
+## Syncing with upstream
+
+`upstream` is local remote configuration, not part of the repository, so a fresh clone starts without it:
+
+```
+git remote add upstream https://github.com/colbymchenry/codegraph.git
+git fetch upstream main --no-tags
+```
+
+Measure before merging anything. This computes the merge and writes its tree **without touching the index or the working tree**, printing any conflicted paths (exit 0 means none):
+
+```
+git merge-tree --write-tree --name-only main upstream/main
+git rev-list --left-right --count main...upstream/main   # left = this fork, right = upstream
+```
+
+Do not read a branch-vs-`main` count as a measure of how far behind upstream this fork is. Those counts describe this repository's own branches: a feature branch can be hundreds of commits ahead of `main` while `main` itself is one upstream commit away from current, because most of that difference is upstream history a branch already merged in. The only number that matters here is `main...upstream/main`.
+
+Then take the sync through a pull request rather than straight onto `main`, even when the merge is textually clean: upstream's resolution changes can merge without a conflict and still fail tests against this fork's tree. `.github/workflows/ci.yml` is the judge, and it takes about ten minutes.
+
+```
+git checkout -b chore/sync-upstream
+git merge upstream/main -m "Merge upstream <sha> into main"
+git push -u origin chore/sync-upstream
+gh pr create --base main --head chore/sync-upstream
+gh pr merge <n> --merge
+git push origin --delete chore/sync-upstream
+```
+
+Last synced: `efff7457` (2026-10-21) — 7 commits, clean merge, PR #3.
