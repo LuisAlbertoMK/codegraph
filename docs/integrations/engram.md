@@ -99,7 +99,10 @@ Direct recall over persistent memory — no code flow. Pairs with `codegraph_exp
 
 **Memory search cache:** answers are cached per backend server, project,
 query and result count for 60 seconds, so repeated questions in a session
-don't hit Engram again. Strict misses fall back to per-term retrieval under
+don't hit Engram again. The cache is bounded at 200 answers and evicts the
+least recently asked first — a hit counts as recent — so the long-lived MCP
+daemon cannot accumulate every question it was ever asked; expired entries are
+dropped before a live one. Strict misses fall back to per-term retrieval under
 its own cache entry, keeping fresh strict matches discoverable. The per-term
 fetches run in parallel and merge preferring rows that match more of the
 query (then strongest-match-first, following the server's own ranking:

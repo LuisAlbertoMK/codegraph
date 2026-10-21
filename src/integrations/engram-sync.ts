@@ -34,9 +34,21 @@ interface CacheEntry<T> {
  *   the URL serves one backend's rows for another and masks outages.
  * - TTL: 60 seconds (balances freshness vs. performance)
  * - Auto-expires: entries older than TTL are ignored
+ * - Bounded: at most {@link MEMORY_CACHE_MAX_ENTRIES} answers, oldest first
  * - Session-only: cleared when process exits (or via clearMemoryCache)
  */
 const MEMORY_CACHE_TTL_MS = 60_000;
+
+/**
+ * Hard bound on cached answers. One key is one distinct
+ * (backend, project, query, limit) question, and the MCP daemon outlives any
+ * single session — unbounded, it would accumulate every question ever asked,
+ * each holding the full content of its observations. TTL alone does not bound
+ * it: an entry is only dropped when its own key is looked up again, so
+ * questions asked once and never repeated would never be evicted.
+ */
+export const MEMORY_CACHE_MAX_ENTRIES = 200;
+
 const memoryCache = new Map<string, CacheEntry<Array<{ title: string; content: string; score: number; type: string }>>>();
 
 function getCacheKey(project: string | undefined, query: string, engramUrl: string, limit: number): string {
@@ -58,11 +70,35 @@ function getCachedResults(key: string): Array<{ title: string; content: string; 
     memoryCache.delete(key);
     return null;
   }
+  // Refresh recency on a hit: a question that keeps being asked must not be
+  // evicted ahead of one that was asked once and never revisited. Map iterates
+  // in insertion order, so re-inserting moves this entry to the newest end.
+  memoryCache.delete(key);
+  memoryCache.set(key, entry);
   return entry.results;
 }
 
 function setCachedResults(key: string, results: Array<{ title: string; content: string; score: number; type: string }>): void {
-  memoryCache.set(key, { results, timestamp: Date.now() });
+  const now = Date.now();
+  // Re-inserting moves the key to the newest end: a question asked again is
+  // hot, and must not be evicted ahead of one asked once long ago.
+  memoryCache.delete(key);
+  memoryCache.set(key, { results, timestamp: now });
+
+  if (memoryCache.size <= MEMORY_CACHE_MAX_ENTRIES) return;
+
+  // Expired answers are dead weight — drop them before evicting a live one.
+  for (const [cachedKey, entry] of memoryCache) {
+    if (memoryCache.size <= MEMORY_CACHE_MAX_ENTRIES) break;
+    if (now - entry.timestamp > MEMORY_CACHE_TTL_MS) memoryCache.delete(cachedKey);
+  }
+
+  // Map iterates in insertion order, so the front is the least recently seen.
+  while (memoryCache.size > MEMORY_CACHE_MAX_ENTRIES) {
+    const oldest = memoryCache.keys().next();
+    if (oldest.done) break;
+    memoryCache.delete(oldest.value);
+  }
 }
 
 // ============================================================================
