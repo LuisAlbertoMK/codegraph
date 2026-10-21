@@ -7647,14 +7647,17 @@ export class ToolHandler {
   /**
    * Resolve the Engram project filter for memory tools: explicit `project`
    * wins (exact Engram project name); otherwise derive it from `projectPath`
-   * the same way the post-index hook does (directory basename) — never pass
-   * a raw filesystem path as the filter, which matches nothing.
+   * the same way the post-index hook does — `origin` remote's repository name,
+   * else the directory basename, i.e. the name Engram itself would use. Never
+   * pass a raw filesystem path as the filter, which matches nothing.
    */
-  private resolveEngramProject(args: Record<string, unknown>): string | undefined {
+  private async resolveEngramProject(args: Record<string, unknown>): Promise<string | undefined> {
     const explicit = args.project as string | undefined;
     if (explicit) return explicit;
     const projectPath = args.projectPath as string | undefined;
-    return projectPath ? projectPath.split(/[\\/]/).filter(Boolean).pop() : undefined;
+    if (!projectPath) return undefined;
+    const { deriveEngramProject } = await import('../integrations/engram-sync');
+    return deriveEngramProject(projectPath);
   }
 
   /**
@@ -7689,9 +7692,12 @@ export class ToolHandler {
 
     // Try to get memory from Engram (non-blocking, graceful degradation).
     // Launched alongside explore: independent inputs, so no reason to serialize.
-    const project = this.resolveEngramProject(args);
+    // The project filter is resolved INSIDE the leg: deriving it shells out to
+    // git once per root, and that must not sit in front of explore's first read.
+    let project: string | undefined;
     const memoryPromise = (async () => {
       try {
+        project = await this.resolveEngramProject(args);
         const { searchEngramMemory } = await import('../integrations/engram-sync');
         return await searchEngramMemory(rawQuery, { limit: 3, project, rootDir: traceRoot });
       } catch {
@@ -7806,7 +7812,7 @@ export class ToolHandler {
       ? Math.min(Math.floor(args.limit), 50)
       : 5;
 
-    const project = this.resolveEngramProject(args);
+    const project = await this.resolveEngramProject(args);
 
     const { elapsedMs, logEngram, startTimer } = await import('../integrations/engram-log');
     const traceRoot = (args.projectPath as string | undefined) ?? process.cwd();

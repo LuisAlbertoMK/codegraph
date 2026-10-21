@@ -2728,8 +2728,14 @@ export class CodeGraph {
    */
   async syncInsightsToEngram(): Promise<void> {
     try {
-      const { extractInsights, readInsightLimitsFromEnv, syncInsightsToEngram: sync } = await import('./integrations/engram-sync');
-      const project = this.getProjectRoot().split(/[\\/]/).pop() || 'unknown';
+      const {
+        deriveEngramProject,
+        extractInsights,
+        readInsightLimitsFromEnv,
+        syncInsightsToEngram: sync,
+      } = await import('./integrations/engram-sync');
+      // The name Engram itself would file this repo under — see the helper.
+      const project = deriveEngramProject(this.getProjectRoot());
 
       console.error(`[codegraph] Extracting insights for Engram sync (project: ${project})...`);
       // Defaults live with the extractor; what to remember differs by repo, so

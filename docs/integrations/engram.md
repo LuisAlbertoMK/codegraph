@@ -50,6 +50,16 @@ export CODEGRAPH_ENGRAM_MIN_IMPACT=5     # nodes in its depth-2 impact radius (d
 
 A small service whose busiest function has two callers records nothing at the defaults — lower both bars there. A very large repo should raise `minCallers` instead: the cap already bounds how much memory a sync writes, and a higher bar means the slots go to the hubs rather than to near-leaf helpers. An unset, malformed, or out-of-range value falls back to the default rather than failing the sync.
 
+### Which project memory lands in
+
+Both halves of a session — the decisions your agent saves and the insights CodeGraph writes after indexing — are filed under the same Engram project, derived the way Engram derives it:
+
+1. `ENGRAM_PROJECT`, when set (Engram's own pin).
+2. The repository name of the `origin` remote: `acme/payments-api.git` → `payments-api`.
+3. The directory's own name, when there is no git remote (or no `origin`).
+
+This matters for a checkout in a folder that does not match its remote — a scratch clone, a fork, a git worktree. Taking the folder name there would split one repository across two projects, and `codegraph_memory_search` would return the insights while missing every decision the agent had saved.
+
 ### Disable Engram Sync
 
 ```bash

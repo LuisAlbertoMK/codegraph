@@ -17,7 +17,87 @@ import type CodeGraph from '../index';
 import type { Node } from '../types';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { describeError, elapsedMs, logEngram, startTimer } from './engram-log';
+
+// ============================================================================
+// Project identity
+// ============================================================================
+
+/** Memoized results of {@link deriveEngramProject} — one entry per root. */
+const projectNameCache = new Map<string, string>();
+
+/**
+ * Bound on {@link projectNameCache}: a long-lived daemon can be pointed at many
+ * projects (`projectPath` per call), and an unbounded map would make every one
+ * of them a permanent allocation.
+ */
+const PROJECT_CACHE_MAX = 32;
+
+/**
+ * The Engram project name for a directory, derived the way Engram derives it:
+ * `ENGRAM_PROJECT` when pinned, else the `origin` remote's repository name,
+ * else the directory basename.
+ *
+ * Matching Engram matters more than picking a good name. The agent's own
+ * memories of this repo live under Engram's name, and every codegraph memory
+ * read and write filters by ours, so a mismatch splits one repository across
+ * two projects: a clone in another folder (`work/`, a fork, a worktree) filed
+ * codegraph's insights apart from the decisions the agent had saved, and
+ * `explore_with_memory` saw only half of what it had written.
+ *
+ * Verified against Engram 3.5.2: a repo whose `origin` is `acme/remote-name`
+ * checked out as `local-dir-name` is stored under `remote-name`; a directory
+ * with no git remote (or no `origin`, only `upstream`) uses its basename. The
+ * git lookup is memoized and never throws: a missing binary, a non-repo, or a
+ * timeout falls back to the basename.
+ */
+export function deriveEngramProject(rootDir: string, env: NodeJS.ProcessEnv = process.env): string {
+  const pinned = env.ENGRAM_PROJECT?.trim();
+  if (pinned) return pinned;
+
+  const cached = projectNameCache.get(rootDir);
+  if (cached) return cached;
+
+  const fallback = rootDir.split(/[\\/]/).filter(Boolean).pop() || 'unknown';
+  const project = projectNameFromRemote(readOriginUrl(rootDir)) ?? fallback;
+  if (projectNameCache.size >= PROJECT_CACHE_MAX) {
+    const oldest = projectNameCache.keys().next().value;
+    if (oldest !== undefined) projectNameCache.delete(oldest);
+  }
+  projectNameCache.set(rootDir, project);
+  return project;
+}
+
+/**
+ * Repository name from a git remote URL, in every form git accepts:
+ * `https://host/group/repo.git`, `git@host:group/repo.git`, `ssh://host/repo`,
+ * a local path, with or without a trailing slash.
+ */
+export function projectNameFromRemote(url: string | null | undefined): string | null {
+  const cleaned = url?.trim().replace(/[\\/]+$/, '');
+  if (!cleaned) return null;
+  const last = cleaned.split(/[/\\:]/).filter(Boolean).pop();
+  if (!last) return null;
+  const name = last.replace(/\.git$/i, '');
+  return name || null;
+}
+
+/** `origin`'s URL for `rootDir`, or null (no git, no remote, git missing). */
+function readOriginUrl(rootDir: string): string | null {
+  try {
+    const url = execFileSync('git', ['config', '--get', 'remote.origin.url'], {
+      cwd: rootDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      timeout: 5000,
+    }).trim();
+    return url || null;
+  } catch {
+    return null;
+  }
+}
 
 // ============================================================================
 // Memory Cache (session-level, avoids repeated Engram calls for same query)
