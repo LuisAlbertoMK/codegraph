@@ -1,0 +1,128 @@
+{
+  "timestamp": "2026-10-10T01:36:31.650Z",
+  "repo": "codegraph",
+  "commit": "cf7a6fa",
+  "branch": "feature/codegraph-engram-integration",
+  "node_version": "v24.21.0",
+  "platform": "win32",
+  "baseline": {
+    "avg_elapsed_ms": 2846,
+    "total_chars": 123436
+  },
+  "normal_explore": {
+    "results": [
+      {
+        "name": "single-symbol",
+        "query": "CodeGraph.indexAll",
+        "elapsed_ms": 3184,
+        "chars": 24948,
+        "symbols_found": 85,
+        "files_found": 5,
+        "has_memory": false,
+        "success": true
+      },
+      {
+        "name": "flow-explore",
+        "query": "CodeGraph sync indexAll",
+        "elapsed_ms": 3368,
+        "chars": 24776,
+        "symbols_found": 87,
+        "files_found": 7,
+        "has_memory": false,
+        "success": true
+      },
+      {
+        "name": "multi-symbol",
+        "query": "ExtractionOrchestrator parseFile resolveReferences",
+        "elapsed_ms": 3523,
+        "chars": 24913,
+        "symbols_found": 121,
+        "files_found": 6,
+        "has_memory": false,
+        "success": true
+      },
+      {
+        "name": "callers",
+        "query": "ReferenceResolver",
+        "elapsed_ms": 3115,
+        "chars": 24987,
+        "symbols_found": 96,
+        "files_found": 5,
+        "has_memory": false,
+        "success": true
+      },
+      {
+        "name": "impact",
+        "query": "GraphTraverser",
+        "elapsed_ms": 3130,
+        "chars": 23812,
+        "symbols_found": 55,
+        "files_found": 2,
+        "has_memory": false,
+        "success": true
+      }
+    ],
+    "avg_elapsed_ms": 3264,
+    "total_chars": 123436
+  },
+  "explore_with_memory": {
+    "results": [
+      {
+        "name": "single-symbol",
+        "query": "CodeGraph.indexAll",
+        "elapsed_ms": 4057,
+        "chars": 24948,
+        "symbols_found": 85,
+        "files_found": 5,
+        "has_memory": true,
+        "success": true
+      },
+      {
+        "name": "flow-explore",
+        "query": "CodeGraph sync indexAll",
+        "elapsed_ms": 4220,
+        "chars": 24776,
+        "symbols_found": 87,
+        "files_found": 7,
+        "has_memory": true,
+        "success": true
+      },
+      {
+        "name": "multi-symbol",
+        "query": "ExtractionOrchestrator parseFile resolveReferences",
+        "elapsed_ms": 4846,
+        "chars": 24913,
+        "symbols_found": 121,
+        "files_found": 6,
+        "has_memory": true,
+        "success": true
+      },
+      {
+        "name": "callers",
+        "query": "ReferenceResolver",
+        "elapsed_ms": 4122,
+        "chars": 24987,
+        "symbols_found": 96,
+        "files_found": 5,
+        "has_memory": true,
+        "success": true
+      },
+      {
+        "name": "impact",
+        "query": "GraphTraverser",
+        "elapsed_ms": 4146,
+        "chars": 23812,
+        "symbols_found": 55,
+        "files_found": 2,
+        "has_memory": true,
+        "success": true
+      }
+    ],
+    "avg_elapsed_ms": 4278,
+    "total_chars": 123436
+  },
+  "overhead": {
+    "ms": 1014,
+    "percent": 31.1
+  }
+}

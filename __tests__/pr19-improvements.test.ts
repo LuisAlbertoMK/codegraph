@@ -278,7 +278,10 @@ export function funcC(): void { console.log('c'); }
     expect(subgraph.nodes.has(funcB.id)).toBe(true);
 
     cg.destroy();
-  });
+    // A cold index of three files spends most of its time loading grammars and
+    // starting the parse worker, which on a loaded Windows host runs past the
+    // default 5s budget while the assertions themselves pass.
+  }, 30_000);
 });
 
 // =============================================================================
@@ -305,12 +308,13 @@ describe('Schema v2 Migration', () => {
     // just makes every schema change edit this test (v9/#1500 was the latest).
     // A fresh database records the current version, so nothing is pending;
     // ask a version-0 database instead to see the full migration list.
-    const dbPath = path.join(createTempDir(), 'schema-version.db');
-    const conn = DatabaseConnection.initialize(dbPath);
+    const dir = createTempDir();
+    const conn = DatabaseConnection.initialize(path.join(dir, 'schema-version.db'));
     const raw = conn.getDb();
     raw.prepare('DELETE FROM schema_versions').run();
     const highest = Math.max(...getPendingMigrations(raw).map((m) => m.version));
     conn.close();
+    cleanupTempDir(dir);
 
     expect(CURRENT_SCHEMA_VERSION).toBe(highest);
   });

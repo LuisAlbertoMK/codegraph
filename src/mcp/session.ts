@@ -15,8 +15,8 @@
 import * as path from 'path';
 import { JsonRpcRequest, JsonRpcNotification, JsonRpcTransport, ErrorCodes } from './transport';
 import { MCPEngine } from './engine';
-import { tools } from './tools';
-import { SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_NO_ROOT_INDEX } from './server-instructions';
+import { tools, getStaticTools } from './tools';
+import { SERVER_INSTRUCTIONS, SERVER_INSTRUCTIONS_NO_ROOT_INDEX, memoryToolsInstructions } from './server-instructions';
 import { CodeGraphPackageVersion } from './version';
 import { resolveServerRoot } from '../directory';
 import { getTelemetry, ClientInfo } from '../telemetry';
@@ -48,9 +48,15 @@ export const SERVER_INFO = {
  * env or it will fail only in the weeks after a release ships.
  */
 export function initializeInstructions(base: string, notice: string | null = getUpdateNotice()): string {
-  if (!notice) return base;
+  // The base constants describe `codegraph_explore` as the only tool, which is
+  // what the DEFAULT surface exposes. When the memory tools are enabled the
+  // tool list grows, so the prose has to grow with it — otherwise the agent is
+  // told one tool exists while `tools/list` offers three.
+  const memory = memoryToolsInstructions(new Set(getStaticTools().map((t) => t.name)));
+  const text = memory ? `${base}\n\n---\n${memory}` : base;
+  if (!notice) return text;
   return (
-    `${base}\n\n---\n${notice} This server keeps running the old version until ` +
+    `${text}\n\n---\n${notice} This server keeps running the old version until ` +
     `the user upgrades — mention it when convenient; do not run the upgrade yourself.`
   );
 }

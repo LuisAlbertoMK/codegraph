@@ -207,6 +207,40 @@ describe('update check (#1243)', () => {
       expect(out).toContain('codegraph upgrade');
       expect(out).toContain('do not run the upgrade yourself');
     });
+
+    // The base constants say "There is a single tool, codegraph_explore". That
+    // is only true of the DEFAULT surface: with the memory tools enabled,
+    // tools/list offers three, so the prose has to describe what is actually
+    // there — and must not name a tool the agent cannot call.
+    describe('memory addendum', () => {
+      const original = process.env.CODEGRAPH_MCP_TOOLS;
+      afterEach(() => {
+        if (original === undefined) delete process.env.CODEGRAPH_MCP_TOOLS;
+        else process.env.CODEGRAPH_MCP_TOOLS = original;
+      });
+
+      it('stays out of the payload when the default surface exposes explore alone', () => {
+        delete process.env.CODEGRAPH_MCP_TOOLS;
+        expect(initializeInstructions('BASE', null)).toBe('BASE');
+      });
+
+      it('describes memory_search when it is enabled', () => {
+        process.env.CODEGRAPH_MCP_TOOLS = 'explore,memory_search';
+        const out = initializeInstructions('BASE', null);
+        expect(out).toContain('## Project memory (Engram)');
+        expect(out).toContain('codegraph_memory_search');
+        // Not enabled here, so it must not be advertised.
+        expect(out).not.toContain('codegraph_explore_with_memory');
+        expect(out).toContain('the code wins and the note is stale');
+      });
+
+      it('names both tools when both are enabled', () => {
+        process.env.CODEGRAPH_MCP_TOOLS = 'explore,memory_search,explore_with_memory';
+        const out = initializeInstructions('BASE', null);
+        expect(out).toContain('codegraph_memory_search');
+        expect(out).toContain('codegraph_explore_with_memory');
+      });
+    });
   });
 
   describe('checkForUpdateInBackground', () => {

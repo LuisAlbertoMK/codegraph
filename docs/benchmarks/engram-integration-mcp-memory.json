@@ -1,0 +1,42 @@
+{
+  "timestamp": "2026-10-10T01:33:37.974Z",
+  "repo": "codegraph",
+  "commit": "cf7a6fa",
+  "node_version": "v24.21.0",
+  "platform": "win32",
+  "results": [
+    {
+      "name": "single-symbol",
+      "query": "CodeGraph.indexAll",
+      "plain_ms": 576,
+      "memory_ms": 577,
+      "plain_chars": 24947,
+      "memory_chars": 27596,
+      "has_memory": true,
+      "overhead_ms": 1
+    },
+    {
+      "name": "flow-explore",
+      "query": "CodeGraph sync indexAll",
+      "plain_ms": 690,
+      "memory_ms": 664,
+      "plain_chars": 24775,
+      "memory_chars": 26771,
+      "has_memory": true,
+      "overhead_ms": -26
+    },
+    {
+      "name": "multi-symbol",
+      "query": "ExtractionOrchestrator parseFile resolveReferences",
+      "plain_ms": 758,
+      "memory_ms": 756,
+      "plain_chars": 24912,
+      "memory_chars": 24912,
+      "has_memory": false,
+      "overhead_ms": -2
+    }
+  ],
+  "avg_plain_ms": 675,
+  "avg_memory_ms": 666,
+  "avg_overhead_ms": -9
+}

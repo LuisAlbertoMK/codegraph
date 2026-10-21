@@ -109,3 +109,47 @@ default project — but the tools are available and work **per project**:
   if it comes up they can run \`codegraph init\` in a project to enable codegraph
   there (a new index is picked up live, no restart).
 `;
+
+/**
+ * The project-memory addendum, appended to whichever instructions variant is
+ * sent when the memory tools are actually exposed (the caller passes the live
+ * `tools/list` names). It stays out of the base constants so the default
+ * surface still truthfully says "one tool" — naming a tool the agent can't see
+ * is the same failure the header warns about.
+ *
+ * Memory is recalled, not authoritative, and that caveat is the point: a stale
+ * note that contradicts the code would otherwise outrank the code, because the
+ * note reads like the project's own decision.
+ */
+export function memoryToolsInstructions(exposed: ReadonlySet<string>): string {
+  const hasSearch = exposed.has('codegraph_memory_search');
+  const hasExploreWithMemory = exposed.has('codegraph_explore_with_memory');
+  if (!hasSearch && !hasExploreWithMemory) return '';
+
+  const bullets: string[] = [];
+  if (hasSearch) {
+    bullets.push(
+      '- `codegraph_memory_search` — the project\'s stored decisions, gotchas and preferences, ' +
+      'matched by keyword. It returns memory, never code: reach for it when the question is *why* ' +
+      'something is the way it is ("what did we decide about X", "what bit us here before"), ' +
+      'before re-litigating a choice the project already made.'
+    );
+  }
+  if (hasExploreWithMemory) {
+    bullets.push(
+      '- `codegraph_explore_with_memory` — `codegraph_explore` plus the memory matching the same ' +
+      'query. Prefer it when the code and its rationale matter together; the recall is cheap ' +
+      'next to the explore it rides on.'
+    );
+  }
+
+  return [
+    '## Project memory (Engram)',
+    '',
+    ...bullets,
+    '',
+    'Memory is recalled, not authoritative: if a note contradicts the code in front of you, the ' +
+    'code wins and the note is stale.',
+  ].join('\n');
+}
+
