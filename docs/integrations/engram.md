@@ -106,6 +106,15 @@ query (then strongest-match-first, following the server's own ranking:
 more negative rank wins), so a row only a later term matches is never
 starved by an earlier term's hits.
 
+**Accents:** Engram indexes `decisión` and `decision` as different words
+(measured: `integración` answers 5 rows, `integracion` answers 0), and its
+`/search` takes no query syntax — no `OR`, no quoting, no wildcards. Both the
+strict query and the per-term fallback therefore ask for an accented term twice,
+as written and folded, and count the two spellings as one query term when
+ranking. That covers an accented query reaching a plainly spelled memory; an
+unaccented query still cannot reach an accented memory, which needs folding at
+index time on the server.
+
 ## Insight Extraction
 
 After each index/sync, CodeGraph extracts key insights and persists them to Engram:

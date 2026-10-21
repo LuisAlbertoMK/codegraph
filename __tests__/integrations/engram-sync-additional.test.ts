@@ -706,6 +706,78 @@ export { calc, proc, val };
       expect(seenQueries).toEqual(['login guard']);
     });
 
+    // Engram keeps accented and unaccented spellings as separate tokens
+    // (measured live: `integración` answers 5 rows, `integracion` answers 0),
+    // so an accented query used to answer nothing about notes spelled plain.
+    const accentServer = async (rows: Array<{ title: string; content: string; rank: number; type: string }>) => {
+      const http = await import('node:http');
+      const seen: string[] = [];
+      const server = http.createServer((req, res) => {
+        const u = new URL(req.url || '/', 'http://localhost');
+        const q = (u.searchParams.get('q') || '').toLowerCase();
+        seen.push(q);
+        const terms = q.split(/\s+/).filter(Boolean);
+        const hits = rows.filter((r) => {
+          const hay = `${r.title} ${r.content}`.toLowerCase();
+          return terms.length > 0 && terms.every((t) => hay.includes(t));
+        });
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(hits));
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const addr = server.address();
+      const url = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+      const close = () => new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve())));
+      return { url, seen, close };
+    };
+
+    it('finds memory spelled without the accent when the query has one', async () => {
+      const { url, seen, close } = await accentServer([
+        { title: 'Decision log', content: 'we chose the decision to batch the writes', rank: -5.0, type: 'decision' },
+      ]);
+      try {
+        const results = await searchEngramMemory('decisión', {
+          engramUrl: url,
+          project: 'fallback-accent',
+        });
+        expect(results.map((r) => r.title)).toContain('Decision log');
+        expect(seen).toContain('decisión');
+        expect(seen).toContain('decision');
+      } finally {
+        await close();
+      }
+    });
+
+    it('does not re-ask for a lone plain term', async () => {
+      seenQueries.length = 0;
+      const results = await searchEngramMemory('nowhere', {
+        engramUrl: andUrl,
+        project: 'fallback-plain',
+      });
+      expect(results).toEqual([]);
+      expect(seenQueries).toEqual(['nowhere']);
+    });
+
+    it('counts two spellings of one term as one when ranking', async () => {
+      // 'Accented memory' matches only the first term, through both spellings;
+      // 'Cross memory' really matches two different terms. Counting fetches
+      // instead of terms would tie them at 2 and let the stronger rank win.
+      const { url, close } = await accentServer([
+        { title: 'Accented memory', content: 'decisión decision', rank: -9.0, type: 'decision' },
+        { title: 'Cross memory', content: 'pipeline decision', rank: -0.5, type: 'decision' },
+      ]);
+      try {
+        const results = await searchEngramMemory('decisión pipeline', {
+          limit: 2,
+          engramUrl: url,
+          project: 'fallback-accent-rank',
+        });
+        expect(results.map((r) => r.title)).toEqual(['Cross memory', 'Accented memory']);
+      } finally {
+        await close();
+      }
+    });
+
     it('merges, dedupes and respects the limit', async () => {
       // Both singles hit overlapping rows; limit 1 must win after score sort.
       const results = await searchEngramMemory('authentication pipeline', {

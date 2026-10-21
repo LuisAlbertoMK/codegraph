@@ -825,6 +825,26 @@ export async function searchEngramMemory(
 }
 
 /**
+ * Diacritic-folded spelling of a search term: `decisión` → `decision`.
+ *
+ * Engram's index keeps accented and unaccented spellings as separate tokens —
+ * measured against the live server, `integración` answers 5 rows while
+ * `integracion` answers 0, and `sesión` 4 while `sesion` 2, over different row
+ * sets. A query written with the accent therefore misses every note written
+ * without it. Folding cannot invent an accent, so this covers accented query →
+ * unaccented memory only; the reverse needs the server to fold at index time.
+ */
+function foldDiacritics(term: string): string {
+  return term.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+/** One query term plus the folded spelling worth asking for, when it differs. */
+function termVariants(term: string): string[] {
+  const folded = foldDiacritics(term);
+  return folded !== term && folded.length >= 3 ? [term, folded] : [term];
+}
+
+/**
  * Per-term (OR) retrieval, used only on a strict-AND miss. All single-term
  * fetches run in parallel (independent HTTP round trips — serially they
  * cost N× one trip), each fetching deeper than `limit` so the merge below —
@@ -835,6 +855,11 @@ export async function searchEngramMemory(
  * Score polarity follows the server (FTS5 bm25: more negative = stronger
  * match, best-first — verified live: multi-term strict hits rank more
  * negative than any single-term hit): sort ascending. Bounded to `limit`.
+ *
+ * An accented term is asked for twice, as written and folded: the strict query
+ * could not have matched a note spelled the other way, and neither could this
+ * fallback before, so `decisión` answered nothing while `decision` answered
+ * five rows.
  */
 async function fetchMemoryHitsOr(
   terms: string,
@@ -844,34 +869,47 @@ async function fetchMemoryHitsOr(
   rootDir?: string,
 ): Promise<EngramMemoryHit[]> {
   const singles = terms.split(/\s+/).filter((t) => t.length > 0);
-  if (singles.length <= 1) return [];
+  if (singles.length === 0) return [];
+  const groups = singles.map(termVariants);
+  // A lone plain term was already asked for verbatim by the strict query;
+  // repeating it by itself buys nothing.
+  if (groups.length === 1 && groups[0]!.length === 1) return [];
   // Depth per term comfortably above `limit` (never below 5): multi-match
   // rows ranked low in one term's list still reach the merge.
   const depth = Math.max(limit, 5);
   const settled = await Promise.all(
-    singles.map((single) =>
-      fetchMemoryHits(single, depth, project, engramUrl, rootDir).catch((): EngramMemoryHit[] => [])
+    groups.map((variants, groupIndex) =>
+      Promise.all(
+        variants.map((variant) =>
+          fetchMemoryHits(variant, depth, project, engramUrl, rootDir).catch((): EngramMemoryHit[] => [])
+        )
+      ).then((lists) => ({ groupIndex, lists }))
     )
   );
 
-  const byKey = new Map<string, { hit: EngramMemoryHit; terms: number }>();
-  for (const hits of settled) {
-    for (const h of hits) {
-      const key = `${h.title}\n${h.content.slice(0, 160)}`;
-      const entry = byKey.get(key);
-      if (entry) {
-        entry.terms += 1;
-        // Rank polarity follows the server (FTS5 bm25: more negative =
-        // stronger match): keep the row's strongest leg.
-        if (h.score < entry.hit.score) entry.hit = h;
-      } else {
-        byKey.set(key, { hit: h, terms: 1 });
+  // Track which query TERMS matched, as the set of group indices: two
+  // spellings of one word are one term, so a row found by both must not count
+  // twice and leapfrog a row that really matched two different words.
+  const byKey = new Map<string, { hit: EngramMemoryHit; terms: Set<number> }>();
+  for (const { groupIndex, lists } of settled) {
+    for (const hits of lists) {
+      for (const h of hits) {
+        const key = `${h.title}\n${h.content.slice(0, 160)}`;
+        const entry = byKey.get(key);
+        if (entry) {
+          entry.terms.add(groupIndex);
+          // Rank polarity follows the server (FTS5 bm25: more negative =
+          // stronger match): keep the row's strongest leg.
+          if (h.score < entry.hit.score) entry.hit = h;
+        } else {
+          byKey.set(key, { hit: h, terms: new Set([groupIndex]) });
+        }
       }
     }
   }
   // Term count first (polarity-independent), then strongest-match-first.
   return [...byKey.values()]
-    .sort((a, b) => b.terms - a.terms || a.hit.score - b.hit.score)
+    .sort((a, b) => b.terms.size - a.terms.size || a.hit.score - b.hit.score)
     .slice(0, limit)
     .map((e) => e.hit);
 }
