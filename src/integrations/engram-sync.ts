@@ -15,7 +15,7 @@
 
 import type CodeGraph from '../index';
 import type { Node } from '../types';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describeError, elapsedMs, logEngram, startTimer } from './engram-log';
@@ -96,6 +96,34 @@ function readOriginUrl(rootDir: string): string | null {
     return url || null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Is the sync state file tracked by git?
+ *
+ * `.codegraph/` is gitignored, so a state file git knows about was force-added:
+ * it is repository content, and repository content is not trusted input. Every
+ * entry that reaches the prune path becomes a DELETE for that observation id,
+ * so a committed state file is a way to have a cloned repo delete memory. When
+ * this returns true the state is ignored and the next sync rebuilds it from ids
+ * this machine actually wrote.
+ *
+ * Positive evidence only: no git binary, not a repository, or a timeout all
+ * report `false` and keep the previous behavior.
+ */
+function stateFileIsTracked(rootDir: string): boolean {
+  try {
+    execFileSync('git', ['ls-files', '--error-unmatch', '--', '.codegraph/engram-sync-state.json'], {
+      cwd: rootDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      timeout: 5000,
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -553,13 +581,28 @@ async function ensureSyncSession(engramUrl: string, project: string, rootDir?: s
 }
 
 /**
- * Engram HTTP timeout (ms). A hung Engram (socket accepted, never responds)
- * must never stall the fire-and-forget post-index chain — it only delays
- * background memory, never indexing. Override with ENGRAM_TIMEOUT_MS.
+ * Hard ceiling on one Engram request. The point of the timeout is that a hung
+ * server cannot hold the post-index chain; a value large enough to do that is
+ * the same failure the timeout exists to prevent, so it is clamped instead of
+ * obeyed.
  */
+export const ENGRAM_TIMEOUT_CEILING_MS = 60_000;
+
+/**
+ * Engram HTTP timeout (ms) from the environment. A hung Engram (socket
+ * accepted, never responds) must never stall the fire-and-forget post-index
+ * chain — it only delays background memory, never indexing. Unset, non-numeric,
+ * or non-positive falls back to 10s; anything larger than
+ * {@link ENGRAM_TIMEOUT_CEILING_MS} is clamped.
+ */
+export function readEngramTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = parseInt(env.ENGRAM_TIMEOUT_MS || '10000', 10);
+  if (!Number.isFinite(raw) || raw <= 0) return 10_000;
+  return Math.min(raw, ENGRAM_TIMEOUT_CEILING_MS);
+}
+
 function getEngramTimeoutMs(): number {
-  const raw = parseInt(process.env.ENGRAM_TIMEOUT_MS || '10000', 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : 10000;
+  return readEngramTimeoutMs();
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs?: number): Promise<Response> {
@@ -567,7 +610,11 @@ async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs?:
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    // Redirects are refused, not followed. Engram is an unauthenticated
+    // loopback server, and a 3xx is the only way a request aimed at 127.0.0.1
+    // (search text, insights, memory ids) can be re-sent to a host off this
+    // machine; following one silently would make that exfiltration free.
+    return await fetch(url, { ...init, redirect: 'error', signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
@@ -689,15 +736,23 @@ async function mapWithConcurrency<T, R>(
  * unindexed root can never wipe a project's memory.
  *
  * The delete is Engram's soft delete, so a wrong prune stays recoverable.
+ *
+ * `project` must be one the caller declared (option or insight). A guessed
+ * name is a delete target: when nobody says which project this is, the safe
+ * move is to delete nothing.
  */
 async function pruneStaleInsights(
   state: Map<string, SyncStateEntry>,
   stillExists: ((filePath: string, qualifiedName: string) => boolean) | undefined,
   engramUrl: string,
-  project: string,
+  project: string | undefined,
   traceRoot?: string,
 ): Promise<{ pruned: number; pruneFailed: number }> {
   if (!stillExists) return { pruned: 0, pruneFailed: 0 };
+  if (!project) {
+    logEngram('sync.prune', { skipped: 'no-project' }, traceRoot);
+    return { pruned: 0, pruneFailed: 0 };
+  }
 
   const stale: Array<[string, SyncStateEntry]> = [];
   for (const [key, entry] of state) {
@@ -763,7 +818,12 @@ export async function syncInsightsToEngram(
   // Called with an empty insight list (an index that produced none) the prune
   // still runs: symbols that vanished are exactly the reason a run can be
   // empty, and the live set is what gates it, not the insight count.
-  const project = options.project ?? insights[0]?.project ?? 'codegraph';
+  //
+  // Posting keeps the 'codegraph' fallback for library callers that never set
+  // a project; pruning does not — it takes its target from a declared name or
+  // not at all (see pruneStaleInsights).
+  const declaredProject = options.project ?? insights[0]?.project;
+  const project = declaredProject ?? 'codegraph';
   const traceRoot = options.rootDir;
   const startedAt = startTimer();
 
@@ -778,7 +838,7 @@ export async function syncInsightsToEngram(
   // exactly the steady state where stale ones would otherwise sit forever.
   Object.assign(
     result,
-    await pruneStaleInsights(state, options.stillExists, engramUrl, project, traceRoot),
+    await pruneStaleInsights(state, options.stillExists, engramUrl, declaredProject, traceRoot),
   );
 
   if (insights.length === 0) {
@@ -936,18 +996,64 @@ type SyncStateEntry = {
   qualifiedName?: string;
 };
 
+/** Where a project's sync state lives. */
+function syncStatePath(rootDir: string): string {
+  return join(rootDir, '.codegraph', 'engram-sync-state.json');
+}
+
+/** A real state file is kilobytes; this bounds what one sync will parse. */
+const SYNC_STATE_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Why this state file must not be trusted, or null when it may be.
+ *
+ * Every accepted entry reaches the prune path as a delete, so the file has to
+ * be the one this machine wrote into `.codegraph/`. A symlink breaks that: its
+ * contents live outside the project and can be swapped for anyone else's file
+ * without touching the project at all. The size bound is the cheap half — one
+ * enormous file must not be parsed into memory on every sync.
+ *
+ * Absent is normal (first run) and returns null.
+ */
+function stateFileProblem(statePath: string): string | null {
+  try {
+    const stat = lstatSync(statePath);
+    if (stat.isSymbolicLink()) return 'symlink';
+    if (!stat.isFile()) return 'not-a-file';
+    if (stat.size > SYNC_STATE_MAX_BYTES) return 'too-large';
+    
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 /**
  * Previously synced entries for a project root. Missing, corrupt, or older
  * state (v1 ids without hashes, or v2 without symbol identity) degrades
  * gracefully: unknown hashes sync once to record them, and entries with no
  * identity are never pruned. Never throws.
+ *
+ * A state file tracked by git is treated as absent — see
+ * {@link stateFileIsTracked}: it is repository content, and pruning would obey
+ * it. The cost is one re-sync that recreates the file locally; the copies in
+ * Engram are left alone.
  */
 function loadSyncState(rootDir?: string): Map<string, SyncStateEntry> {
   const out = new Map<string, SyncStateEntry>();
   if (!rootDir) return out;
+  if (stateFileIsTracked(rootDir)) {
+    logEngram('sync.state', { ignored: 'tracked-in-git' }, rootDir);
+    return out;
+  }
+  const untrusted = stateFileProblem(syncStatePath(rootDir));
+  if (untrusted) {
+    logEngram('sync.state', { ignored: untrusted }, rootDir);
+    return out;
+  }
   try {
     const raw = JSON.parse(
-      readFileSync(join(rootDir, '.codegraph', 'engram-sync-state.json'), 'utf8')
+      readFileSync(syncStatePath(rootDir), 'utf8')
     ) as {
       version?: number;
       idsByKey?: Record<string, number | string>;
@@ -979,6 +1085,9 @@ function loadSyncState(rootDir?: string): Map<string, SyncStateEntry> {
  * Persist the sync state. `allowEmpty` exists for the prune: an empty map
  * there means "every synced insight is gone", which must be written — the
  * default guard would leave the deleted keys on disk to be retried forever.
+ *
+ * A symlinked path is never written through: writing would replace whatever it
+ * points at, outside the project, on behalf of whoever planted the link.
  */
 function saveSyncState(
   rootDir: string | undefined,
@@ -987,10 +1096,14 @@ function saveSyncState(
 ): void {
   if (!rootDir) return;
   if (entries.size === 0 && !allowEmpty) return;
+  const statePath = syncStatePath(rootDir);
+  try {
+    if (lstatSync(statePath).isSymbolicLink()) return;
+  } catch { /* absent: the normal first write */ }
   try {
     mkdirSync(join(rootDir, '.codegraph'), { recursive: true });
     writeFileSync(
-      join(rootDir, '.codegraph', 'engram-sync-state.json'),
+      statePath,
       JSON.stringify({ version: 3, entries: Object.fromEntries(entries) })
     );
   } catch { /* best-effort; stateless fallback keeps working */ }

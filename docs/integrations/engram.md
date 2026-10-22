@@ -33,7 +33,7 @@ Set the environment variable before running CodeGraph:
 ```bash
 export CODEGRAPH_ENGRAM_ENABLED=1
 export ENGRAM_URL=http://127.0.0.1:7437  # Engram HTTP API URL (engram serve default port)
-export ENGRAM_TIMEOUT_MS=10000  # Engram HTTP timeout in ms (default: 10000) — also the retry budget
+export ENGRAM_TIMEOUT_MS=10000  # Engram HTTP timeout in ms (default: 10000, max: 60000) — also the retry budget
 export ENGRAM_RETRY_ATTEMPTS=3  # total attempts per request (default: 3; 1 disables retrying)
 export CODEGRAPH_MCP_TOOLS=explore,memory_search,explore_with_memory  # expose memory tools (default: explore only)
 ```
@@ -314,6 +314,10 @@ If Engram is unavailable:
 ### Retries
 
 A transient failure is retried within the SAME `ENGRAM_TIMEOUT_MS` window — a dropped connection, a server error (5xx), or rate limiting (429). The per-attempt timeout is capped by what is left of the window, so retrying can never make a dead Engram slower: a hung server still issues exactly one request and gives up at `ENGRAM_TIMEOUT_MS`. A 4xx is never retried (the same request fails the same way). Repeated POSTs are safe because Engram upserts on the insight's deduplication key. Tune with `ENGRAM_RETRY_ATTEMPTS` (default 3, backoff 100ms→500ms with full jitter). A POST that needed more than one attempt is counted in the sync result's `retried`, so a reader of the created/updated split knows it may have drifted (the server may already have processed the attempt that timed out; the data is still one observation, upserted).
+
+### Request boundary
+
+Every request is sent with redirects refused: Engram is a local, unauthenticated HTTP server, and a redirect is the one way a request aimed at 127.0.0.1 could be re-sent somewhere else. A 3xx fails the request like any other network error instead of being forwarded. ENGRAM_TIMEOUT_MS is clamped to 60 seconds for the same reason — a timeout large enough to hold an indexing run open defeats the point of having one.
 
 ### Pruning stale insights
 
