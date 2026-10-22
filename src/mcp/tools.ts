@@ -7650,14 +7650,21 @@ export class ToolHandler {
    * the same way the post-index hook does — `origin` remote's repository name,
    * else the directory basename, i.e. the name Engram itself would use. Never
    * pass a raw filesystem path as the filter, which matches nothing.
+   *
+   * The filter is never left off. Engram's `/search` without `project` answers
+   * from every project on the machine, so an unfiltered call would hand one
+   * repository's memory to a session working in another; when the caller names
+   * no path, this session's own project root supplies the name.
    */
   private async resolveEngramProject(args: Record<string, unknown>): Promise<string | undefined> {
     const explicit = args.project as string | undefined;
     if (explicit) return explicit;
-    const projectPath = args.projectPath as string | undefined;
-    if (!projectPath) return undefined;
     const { deriveEngramProject } = await import('../integrations/engram-sync');
-    return deriveEngramProject(projectPath);
+    const projectPath = args.projectPath as string | undefined;
+    if (projectPath) return deriveEngramProject(projectPath);
+    return deriveEngramProject(
+      this.cg?.getProjectRoot() ?? this.defaultProjectHint ?? process.cwd(),
+    );
   }
 
   /**
