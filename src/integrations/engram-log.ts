@@ -20,7 +20,7 @@
  * or into a tool call.
  */
 
-import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
+import { appendFileSync, lstatSync, mkdirSync, renameSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 const DEFAULT_MAX_BYTES = 1024 * 1024;
@@ -72,6 +72,12 @@ export function logEngram(event: string, fields: EngramLogFields = {}, rootDir?:
     announcedPath = file;
     try { console.error(`[engram-log] trace: ${file} (pid ${process.pid})`); } catch { /* stderr closed */ }
   }
+  try {
+    // Never append through a symlink. The trace path is predictable, so a
+    // linked one lets anything that can write `.codegraph/` append
+    // attacker-chosen text to a file of its choosing, one line at a time.
+    if (lstatSync(file).isSymbolicLink()) return;
+  } catch { /* absent: the normal first write */ }
   try {
     mkdirSync(dirname(file), { recursive: true });
     rotateIfNeeded(file);

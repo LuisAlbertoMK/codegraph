@@ -317,6 +317,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - With Engram sync enabled, a memory sync state file that a repository commits is now ignored. That file lists the memory entries CodeGraph is allowed to delete, and it normally lives outside version control, so a committed copy was a way for a cloned repository to have codegraph erase memory. CodeGraph rebuilds it locally on the next index, and the memory entries themselves are left alone.
 - Memory search now always looks inside a single Engram project. When neither a project name nor a project path was given, it searched every project on the machine, so a session working in one repository could surface another repository's memory.
 - Recalled memory is now presented as stored text rather than as instructions, in both memory tools. A memory entry can quote code — including comments that read like commands — so the agent is told to use it as background data instead of following anything written inside it.
+- Engram requests no longer follow redirects. A redirect is the one way a request meant for the local memory server could be re-sent to another machine, so it now fails like any other network error instead of being forwarded.
+- A memory sync can no longer be stretched past a minute by one slow response. An unusually large request timeout setting is capped at 60 seconds, so a hung memory server delays background memory for a bounded time instead of holding an indexing run open.
+- The memory sync state file is ignored when it is a symbolic link or unusually large, and CodeGraph refuses to write through a link placed at that path. That file decides which memory entries may be deleted, and the debug trace is now handled the same way, so neither can be redirected into a file outside the project.
 
 ## [1.6.2] - 2026-10-03
 
