@@ -99,6 +99,34 @@ function readOriginUrl(rootDir: string): string | null {
   }
 }
 
+/**
+ * Is the sync state file tracked by git?
+ *
+ * `.codegraph/` is gitignored, so a state file git knows about was force-added:
+ * it is repository content, and repository content is not trusted input. Every
+ * entry that reaches the prune path becomes a DELETE for that observation id,
+ * so a committed state file is a way to have a cloned repo delete memory. When
+ * this returns true the state is ignored and the next sync rebuilds it from ids
+ * this machine actually wrote.
+ *
+ * Positive evidence only: no git binary, not a repository, or a timeout all
+ * report `false` and keep the previous behavior.
+ */
+function stateFileIsTracked(rootDir: string): boolean {
+  try {
+    execFileSync('git', ['ls-files', '--error-unmatch', '--', '.codegraph/engram-sync-state.json'], {
+      cwd: rootDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      timeout: 5000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ============================================================================
 // Memory Cache (session-level, avoids repeated Engram calls for same query)
 // ============================================================================
@@ -689,15 +717,23 @@ async function mapWithConcurrency<T, R>(
  * unindexed root can never wipe a project's memory.
  *
  * The delete is Engram's soft delete, so a wrong prune stays recoverable.
+ *
+ * `project` must be one the caller declared (option or insight). A guessed
+ * name is a delete target: when nobody says which project this is, the safe
+ * move is to delete nothing.
  */
 async function pruneStaleInsights(
   state: Map<string, SyncStateEntry>,
   stillExists: ((filePath: string, qualifiedName: string) => boolean) | undefined,
   engramUrl: string,
-  project: string,
+  project: string | undefined,
   traceRoot?: string,
 ): Promise<{ pruned: number; pruneFailed: number }> {
   if (!stillExists) return { pruned: 0, pruneFailed: 0 };
+  if (!project) {
+    logEngram('sync.prune', { skipped: 'no-project' }, traceRoot);
+    return { pruned: 0, pruneFailed: 0 };
+  }
 
   const stale: Array<[string, SyncStateEntry]> = [];
   for (const [key, entry] of state) {
@@ -763,7 +799,12 @@ export async function syncInsightsToEngram(
   // Called with an empty insight list (an index that produced none) the prune
   // still runs: symbols that vanished are exactly the reason a run can be
   // empty, and the live set is what gates it, not the insight count.
-  const project = options.project ?? insights[0]?.project ?? 'codegraph';
+  //
+  // Posting keeps the 'codegraph' fallback for library callers that never set
+  // a project; pruning does not — it takes its target from a declared name or
+  // not at all (see pruneStaleInsights).
+  const declaredProject = options.project ?? insights[0]?.project;
+  const project = declaredProject ?? 'codegraph';
   const traceRoot = options.rootDir;
   const startedAt = startTimer();
 
@@ -778,7 +819,7 @@ export async function syncInsightsToEngram(
   // exactly the steady state where stale ones would otherwise sit forever.
   Object.assign(
     result,
-    await pruneStaleInsights(state, options.stillExists, engramUrl, project, traceRoot),
+    await pruneStaleInsights(state, options.stillExists, engramUrl, declaredProject, traceRoot),
   );
 
   if (insights.length === 0) {
@@ -941,10 +982,19 @@ type SyncStateEntry = {
  * state (v1 ids without hashes, or v2 without symbol identity) degrades
  * gracefully: unknown hashes sync once to record them, and entries with no
  * identity are never pruned. Never throws.
+ *
+ * A state file tracked by git is treated as absent — see
+ * {@link stateFileIsTracked}: it is repository content, and pruning would obey
+ * it. The cost is one re-sync that recreates the file locally; the copies in
+ * Engram are left alone.
  */
 function loadSyncState(rootDir?: string): Map<string, SyncStateEntry> {
   const out = new Map<string, SyncStateEntry>();
   if (!rootDir) return out;
+  if (stateFileIsTracked(rootDir)) {
+    logEngram('sync.state', { ignored: 'tracked-in-git' }, rootDir);
+    return out;
+  }
   try {
     const raw = JSON.parse(
       readFileSync(join(rootDir, '.codegraph', 'engram-sync-state.json'), 'utf8')

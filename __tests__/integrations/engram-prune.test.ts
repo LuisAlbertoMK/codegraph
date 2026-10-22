@@ -10,10 +10,21 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { execFileSync } from 'child_process';
 import { syncInsightsToEngram } from '../../src/integrations/engram-sync';
 
 const BACKEND = 'http://prune-test.invalid';
 const PROJECT = 'prune-project';
+
+/** Git is the detector for "this state file came from the repository". */
+const hasGit = ((): boolean => {
+  try {
+    execFileSync('git', ['--version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 type Call = { method: string; url: URL };
 
@@ -160,8 +171,7 @@ describe('Engram insight pruning', () => {
     expect(Object.keys(readState().entries)).toHaveLength(1);
   });
 
-  it('prunes alongside a normal sync, recording identity for each posted insight', async () => {
-    writeState({
+  it('prunes alongside a normal sync, recording identity for each posted insight', async () => {    writeState({
       'codegraph:prune-project:src/gone.ts:src/gone.ts::gone': {
         id: 41, hash: 'old', filePath: 'src/gone.ts', qualifiedName: 'src/gone.ts::gone',
       },
@@ -201,5 +211,67 @@ describe('Engram insight pruning', () => {
     expect(entries['codegraph:prune-project:src/new.ts:src/new.ts::fresh']).toMatchObject({
       id: 101, filePath: 'src/new.ts', qualifiedName: 'src/new.ts::fresh',
     });
+  });
+
+  it('never deletes when nobody declared a project', async () => {
+    writeState({
+      'codegraph:prune-project:src/gone.ts:src/gone.ts::gone': {
+        id: 51, hash: 'h5', filePath: 'src/gone.ts', qualifiedName: 'src/gone.ts::gone',
+      },
+    });
+    const calls = stubEngram();
+
+    // No option and no insight: the old fallback aimed this at the literal
+    // 'codegraph' project, which is somebody else's memory namespace.
+    const result = await syncInsightsToEngram([], BACKEND, {
+      rootDir: root,
+      stillExists: () => false,
+    });
+
+    expect(result.pruned).toBe(0);
+    expect(deletes(calls)).toHaveLength(0);
+    expect(Object.keys(readState().entries)).toHaveLength(1);
+  });
+
+  it.runIf(hasGit)('ignores a state file the repository tracks', async () => {
+    writeState({
+      'codegraph:prune-project:src/gone.ts:src/gone.ts::gone': {
+        id: 61, hash: 'h6', filePath: 'src/gone.ts', qualifiedName: 'src/gone.ts::gone',
+      },
+    });
+    // `.codegraph/` is gitignored, so a state file in git was force-added:
+    // it is repository content, and every entry in it is a delete request.
+    execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' });
+    execFileSync('git', ['add', '-f', '.codegraph/engram-sync-state.json'], { cwd: root, stdio: 'ignore' });
+    const calls = stubEngram();
+
+    const result = await syncInsightsToEngram([], BACKEND, {
+      rootDir: root,
+      project: PROJECT,
+      stillExists: () => false,
+    });
+
+    expect(result.pruned).toBe(0);
+    expect(result.pruneFailed).toBe(0);
+    expect(deletes(calls)).toHaveLength(0);
+  });
+
+  it.runIf(hasGit)('still prunes from a state file git does not track', async () => {
+    writeState({
+      'codegraph:prune-project:src/gone.ts:src/gone.ts::gone': {
+        id: 71, hash: 'h7', filePath: 'src/gone.ts', qualifiedName: 'src/gone.ts::gone',
+      },
+    });
+    execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' });
+    const calls = stubEngram();
+
+    const result = await syncInsightsToEngram([], BACKEND, {
+      rootDir: root,
+      project: PROJECT,
+      stillExists: () => false,
+    });
+
+    expect(result.pruned).toBe(1);
+    expect(deletes(calls)[0]?.url.pathname).toBe('/observations/71');
   });
 });
