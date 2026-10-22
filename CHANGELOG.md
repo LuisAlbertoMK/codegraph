@@ -312,6 +312,11 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `codegraph sync` and the file watcher now follow an edit that changes which declaration a module exports as its default, like `export default A` becoming `export default B` while `A` stays, or the module dropping its default. References through `import Y from './x'`, `{ default as Y }`, `require('./x').default`, a barrel that passes the default on or a route that renders it as a layout, and calls on a value typed by it, now link to the new default, or stay unlinked, as a fresh index has them. Before, they kept pointing at the old declaration until the importing file changed or the project was indexed again.
 - `codegraph sync` and the file watcher now relink a named import that a name match had linked to a declaration elsewhere while its module didn't export the name, once an edit makes the module export it, like `import { EmptyState } from './layouts/shared'` after the barrel gains `export { EmptyState } from './EmptyState'`. An import a name match had linked to a class the module exported only as its default comes unlinked once the module stops exporting it. Before, the import, the references through it and calls on values typed by it kept the old link until the importing file changed or the project was indexed again.
 
+### Security
+
+- With Engram sync enabled, a memory sync state file that a repository commits is now ignored. That file lists the memory entries CodeGraph is allowed to delete, and it normally lives outside version control, so a committed copy was a way for a cloned repository to have codegraph erase memory. CodeGraph rebuilds it locally on the next index, and the memory entries themselves are left alone.
+- Memory search now always looks inside a single Engram project. When neither a project name nor a project path was given, it searched every project on the machine, so a session working in one repository could surface another repository's memory.
+
 ## [1.6.2] - 2026-10-03
 
 ### Highlights
