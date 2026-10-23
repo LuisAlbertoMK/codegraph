@@ -42,6 +42,37 @@ const FIXTURE_SRC = path.join(__dirname, 'fixtures', 'payroll-go');
 const QUERY = 'how does payroll cycle create and calculate payslips?';
 const POINTER = 'Already sent earlier in this conversation';
 
+/**
+ * Give every file of the copied fixture LF line endings. A Windows checkout
+ * with `core.autocrlf` writes the fixture with CRLF, and explore's per-file
+ * character budget counts each line's `\r`, so there a file renders fewer
+ * lines and the second call meets different held spans than on Linux or macOS
+ * (#2756). The suite tests one scenario on every checkout.
+ */
+function normalizeLineEndings(dir: string): void {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const file = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      normalizeLineEndings(file);
+      continue;
+    }
+    // latin1 maps every byte to one char, so the rewrite changes nothing but the `\r`s.
+    const text = fs.readFileSync(file, 'latin1');
+    if (text.includes('\r\n')) fs.writeFileSync(file, text.replace(/\r\n/g, '\n'), 'latin1');
+  }
+}
+
+/** Consecutive line numbers grouped into runs: [3, 4, 5, 9] → [[3, 4, 5], [9]]. */
+function consecutiveRuns(lines: Iterable<number>): number[][] {
+  const runs: number[][] = [];
+  for (const n of [...lines].sort((a, b) => a - b)) {
+    const run = runs[runs.length - 1];
+    if (run && n === run[run.length - 1]! + 1) run.push(n);
+    else runs.push([n]);
+  }
+  return runs;
+}
+
 describe('dedup configuration', () => {
   it('defaults off and requires an explicit truthy opt-in', () => {
     const previous = process.env.CODEGRAPH_EXPLORE_DEDUP;
@@ -213,6 +244,7 @@ describe('a second call against a real index', () => {
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-cg18-'));
     fs.cpSync(FIXTURE_SRC, testDir, { recursive: true });
     fs.rmSync(path.join(testDir, '.codegraph'), { recursive: true, force: true });
+    normalizeLineEndings(testDir);
     cg = CodeGraph.initSync(testDir);
     await cg.indexAll();
     handler = new ToolHandler(cg);
@@ -264,7 +296,6 @@ describe('a second call against a real index', () => {
     // Every file whose source the second call withheld carries a pointer, and
     // the pointer names it.
     expect(second).toContain(POINTER);
-
     // Whether call 2 had anything new to say is a fact about the FIXTURE, not
     // about dedup: the budget is counted in bytes, so an LF checkout (CI) fits
     // the whole fixture into the first call where a CRLF one does not. When
@@ -275,27 +306,25 @@ describe('a second call against a real index', () => {
       0,
     );
 
-    const repeats = [...before.entries()]
-      .map(([file, lines]) => [
-        file,
-        [...(after.get(file) ?? [])].filter((n) => lines.has(n)),
-      ] as const)
-      .filter(([, repeated]) => repeated.length > 0);
-
     if (freshLines === 0) {
-      expect(repeats.length).toBe(1);
+      const restored = [...before.entries()].filter(([file, lines]) =>
+        [...(after.get(file) ?? [])].some((n) => lines.has(n)),
+      );
+      expect(restored.length).toBe(1);
       return;
     }
 
-    for (const [file, repeated] of repeats) {
-      // A covered run shorter than MIN_COVERED_LINES is emitted on purpose
-      // ("cut chunks, not slivers" — an 8-line run is the shortest pointer worth
-      // its own ~140 chars). What must never come back is a whole served run,
-      // and that is what this catches.
-      if (repeated.length >= EXPLORE_DEDUP.MIN_COVERED_LINES) {
-        throw new Error(
-          `call 2 re-sent ${file} lines ${repeated.slice(0, 5).join(',')} (${repeated.length} lines)`,
-        );
+    for (const [file, lines] of before) {
+      const repeated = [...(after.get(file) ?? [])].filter((n) => lines.has(n));
+      // Two repeats are sanctioned. The anti-abandonment restore fires ONLY
+      // when the call found nothing new to say, and this one did. And rule 3
+      // of the range algebra: a held run shorter than MIN_COVERED_LINES stays
+      // inside the span around it rather than becoming a pointer (cycle.go's
+      // 7-line `RunResult` struct, held by call 1, comes back inside call 2's
+      // render of the file's head, #2756). A longer run is a real duplicate.
+      for (const run of consecutiveRuns(repeated)) {
+        if (run.length < EXPLORE_DEDUP.MIN_COVERED_LINES) continue;
+        throw new Error(`call 2 re-sent ${file} lines ${run[0]}-${run[run.length - 1]} (${run.length} lines)`);
       }
     }
   }, 120_000);
