@@ -23,6 +23,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The Engram trace now records every spelling a memory search asked for, so a folded word — a query typed with accents reaching memory written without them — is visible in the record instead of implied.
 - The automatic post-index insight sync runs faster on large repos by scoring a candidate pool with level-batched impact walks instead of walking the whole graph node by node.
 - With Engram sync enabled, you can now tune what gets remembered instead of accepting one fixed bar: `CODEGRAPH_ENGRAM_MIN_CALLERS` and `CODEGRAPH_ENGRAM_MIN_IMPACT` set how many callers and how much of the graph a symbol needs, and `CODEGRAPH_ENGRAM_MAX_INSIGHTS` sets how many entries a sync writes. A small project whose busiest function has only a couple of callers can now remember something at all.
+- `codegraph files --format package`, and `codegraph_files` with `format: "package"`, now group a project's files by the package that owns them. The owner is the nearest `package.json` or `composer.json` that names one, so a monorepo splits into its workspace members with no configuration, and files no manifest claims get a section of their own instead of being folded into the root package. (#1871)
 
 ### Fixes
 
