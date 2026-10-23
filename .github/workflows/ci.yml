@@ -1,0 +1,59 @@
+name: CI
+
+# Nothing runs the suite: a change is green on the machine that wrote it and
+# nowhere else. This runs the three steps a contributor runs by hand —
+# typecheck, build (the CLI and both vitest projects read from dist/), then the
+# full suite — on the platform the packaged runtime is least often exercised
+# on.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# A superseded run on the same ref has nothing to say: cancel it.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # The suite is large (two vitest projects, engine + viewer). Long is fine;
+    # silent is not: a job that hangs should fail, not hold the queue.
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 22 is the floor the bundled runtime ships and the first line with
+      # node:sqlite, which the database layer requires.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      # Explicit list so the log shows which project failed, and so a viewer
+      # regression is not hidden inside an engine failure.
+      - name: Test
+        run: npx vitest run --project engine --project ui
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 3
+          if-no-files-found: ignore
