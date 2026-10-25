@@ -6,7 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { Language, Node } from '../types';
+import { Language, Node, IMPLICIT_RECORD_ACCESSOR_DOC } from '../types';
 import { escapeRegExp } from '../utils';
 import { UnresolvedRef, ResolvedRef, ResolutionContext, ImportMapping, isSupertypeTarget, CPP_DEFINE_SIGNATURE, isInheritanceRef, isImportableKind } from './types';
 import { blankStringContents, stripCommentsForRegex } from './strip-comments';
@@ -1937,7 +1937,7 @@ const JVM_PACKAGES = new WeakMap<ResolutionContext, Set<string>>();
  * `import static org.junit.Assert.assertEquals;`. A nested class of a project
  * type (`import com.acme.Outer.Inner;`) is under a project package, so it is not.
  */
-function isJavaOutsideImport(name: string, ref: UnresolvedRef, context: ResolutionContext): boolean {
+export function isJavaOutsideImport(name: string, ref: UnresolvedRef, context: ResolutionContext): boolean {
   const binding = context.getImportMappings(ref.filePath, ref.language).find((m) => m.localName === name);
   if (!binding) return false;
   // A member the file declares itself is in scope before any import —
@@ -2154,6 +2154,21 @@ function luaModuleFile(name: string, decl: Node, context: ResolutionContext): st
  * its library's, which can span several files: see isVisibleAcrossFiles.)
  */
 const PRIVATE_IS_FILE_LOCAL = new Set<string>(['kotlin', 'java', 'csharp', 'swift', 'scala', 'php']);
+
+/**
+ * Whether a resolution lands on a Java record's implicit accessor from outside
+ * the record. One is reached through what types its receiver (a typed
+ * receiver, `Record::x`, `Record.x`) or from inside the record; a name-only
+ * guess bound `result.content()` on a library type to any record with a
+ * `content` component. Applied by ReferenceResolver to name-only results.
+ */
+export function isGuessedRecordAccessor(resolved: ResolvedRef, ref: UnresolvedRef, context: ResolutionContext): boolean {
+  const target = context.getNodeById?.(resolved.targetNodeId);
+  if (!target || target.kind !== 'method' || target.docstring !== IMPLICIT_RECORD_ACCESSOR_DOC) return false;
+  const record = target.qualifiedName.slice(0, target.qualifiedName.lastIndexOf('::'));
+  return ref.filePath !== target.filePath || !context.getNodesInFile(target.filePath).some((n) =>
+    n.kind === 'class' && n.qualifiedName === record && n.startLine <= ref.line && (n.endLine ?? n.startLine) >= ref.line);
+}
 
 /** Per-context memo: node id → "this C/C++ function is declared `static`". */
 const C_STATIC_MEMO = new WeakMap<ResolutionContext, Map<string, boolean>>();
@@ -12034,7 +12049,9 @@ export function matchByExactName(
   if (bestMatch && isCrossFileReachable(bestMatch, ref, context)) {
     // Lower confidence when the match is from a distant/unrelated module
     const proximity = computePathProximity(ref.filePath, bestMatch.filePath);
-    const confidence = proximity >= 30 ? 0.7 : 0.4;
+    const confidence = isDecisiveSameFileMatch(bestMatch, ref, candidates, context)
+      ? 0.9
+      : proximity >= 30 ? 0.7 : 0.4;
     return {
       original: ref,
       targetNodeId: bestMatch.id,
@@ -18454,6 +18471,8 @@ const MEMBER_TYPE_NON_TYPES: ReadonlySet<string> = new Set([
   'var', 'val', 'goto', 'nameof', 'typeof', 'sizeof', 'default', 'when', 'where', 'get', 'set', 'init',
   'class', 'interface', 'enum', 'struct', 'record', 'object', 'namespace', 'package', 'import', 'extends',
   'implements', 'fun', 'static', 'final', 'abstract', 'sealed', 'override', 'virtual', 'delegate', 'event',
+  // Java's `sealed interface Shape permits Circle, Square` and `void run() throws Failure {`.
+  'permits', 'throws',
 ]);
 
 /**
@@ -20434,6 +20453,7 @@ export function matchMethodCall(
             targetNodeId: methodNode.id,
             confidence: 0.8,
             resolvedBy: 'instance-method',
+            byName: true,
           };
         }
       }
@@ -20556,6 +20576,7 @@ export function matchMethodCall(
         targetNodeId: targetMethods[0]!.id,
         confidence: 0.7,
         resolvedBy: 'instance-method',
+        byName: true,
       };
     }
 
@@ -20640,6 +20661,7 @@ export function matchMethodCall(
           targetNodeId: bestMatch.id,
           confidence: 0.65,
           resolvedBy: 'instance-method',
+          byName: true,
         };
       }
     }
@@ -26050,6 +26072,9 @@ export function matchNewReceiverCall(ref: UnresolvedRef, context: ResolutionCont
   const shape = ref.referenceName.match(NEW_RECEIVER_SHAPE);
   const method = shape?.[2];
   if (!cls || !method) return null;
+  // Java's and C#'s no-argument `new Foo().bar()` reach here from the
+  // conformance pass; their own rules pick among same-named classes.
+  if (ref.language === 'java' || ref.language === 'csharp') return matchJavaCsharpNewReceiverCall(cls, shape![1]!, method, ref, context);
   // Several classes may share the name: the one the call's file imports
   // under the written name is the class constructed (tsImportedTypeFile).
   const onClass = resolveMethodOnType(cls, method, ref, context, 0.9, 'instance-method', tsImportedTypeFile(shape![1]!, ref, context));
@@ -26065,6 +26090,36 @@ export function matchNewReceiverCall(ref: UnresolvedRef, context: ResolutionCont
   return onProto.length === 1
     ? { original: ref, targetNodeId: onProto[0]!.id, confidence: 0.8, resolvedBy: 'instance-method' }
     : null;
+}
+
+/**
+ * A Java or C# `new Foo().bar()`. With one project class of the name, its
+ * method or an inherited one, as for any typed call. With several, the class
+ * the language picks, or none: Java's written package (`new a.b.Foo()`), the
+ * file's single-type import, else the caller's own package; C#'s one type the
+ * file's namespaces and usings can see (isCsharpTypeVisible). Then only that
+ * class's own method: an inherited one is looked up by name, across every
+ * class of the name.
+ */
+function matchJavaCsharpNewReceiverCall(cls: string, written: string, method: string, ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  const twins = context.getNodesByName(cls).filter((n) =>
+    (n.kind === 'class' || n.kind === 'struct') && sameLanguageFamily(n.language, ref.language));
+  if (twins.length <= 1) return resolveMethodOnType(cls, method, ref, context, 0.9, 'instance-method');
+  const dirOf = (file: string) => file.slice(0, file.lastIndexOf('/'));
+  let chosen: Node | undefined;
+  if (ref.language === 'csharp') {
+    const visible = twins.filter((n) => isCsharpTypeVisible(n, ref, context));
+    if (visible.length === 1) chosen = visible[0];
+  } else {
+    const fqn = written.includes('.') ? written : importedFqnOf(cls, ref, context);
+    const byPath = (n: Node) => n.filePath.replace(/\.java$/, '').endsWith('/' + fqn!.replace(/\./g, '/'));
+    const ownPackage = twins.filter((n) => dirOf(n.filePath) === dirOf(ref.filePath));
+    chosen = fqn ? twins.find(byPath) : ownPackage.length === 1 ? ownPackage[0] : undefined;
+  }
+  if (!chosen) return null;
+  const own = context.getNodesInFile(chosen.filePath).find((n) =>
+    n.kind === 'method' && n.name === method && n.qualifiedName === `${chosen!.qualifiedName}::${method}`);
+  return own ? { original: ref, targetNodeId: own.id, confidence: 0.9, resolvedBy: 'instance-method' } : null;
 }
 
 /** Resolve the implementation inside the identified store, not a namesake or
@@ -26678,6 +26733,55 @@ function computePathProximity(filePath1: string, filePath2: string): number {
 }
 
 /**
+ * Whether `findBestMatch` picked `best` because it is THE definition in the
+ * call site's own file, so the edge deserves a same-file confidence rather than
+ * the directory-proximity one. Proximity measures shared folders, so a
+ * same-file match in a shallow path (`scripts/x.py` → its own `main`) scored
+ * 0.4 like a guess across unrelated modules. Decisive only when:
+ * - `best` is the ONLY same-file candidate — several (two classes' `run` in
+ *   one file) are separated by line distance, which is not evidence; and
+ * - a member of a type, module or namespace belongs to one the caller is
+ *   inside — a bare call does not reach a sibling class's method just
+ *   because it is written in that file, nor is okhttp's `Dns { … }` in one
+ *   nested object the `Dns` entry of the enum beside it. A method's owner is
+ *   always such a scope; another kind's is judged when the file declares it
+ *   as anything but a function, whose nested definitions lexical
+ *   reachability already scoped; and
+ * - `best` is not the caller itself — `super.onCreate()`,
+ *   `parent::__construct()` and `json.dumps` inside `dumps` all arrive here
+ *   without their receiver, and recursion cannot be told apart from them.
+ * 0.9 matches the unique exact-match above: the same-file bonus in
+ * findBestMatch outweighs any directory proximity, so a lone same-file
+ * definition is as settled as a lone candidate. The resolver keeps the most
+ * confident strategy, so this also outranks a sub-0.9 framework guess that
+ * sent the name to another file (ASP.NET's naming rule took eShopOnWeb's
+ * `ToastService.OnShow` for the `ToastService` class, not the component's
+ * property of that name) — the file's own definition is the one the name
+ * means.
+ */
+function isDecisiveSameFileMatch(
+  best: Node,
+  ref: UnresolvedRef,
+  candidates: Node[],
+  context: ResolutionContext
+): boolean {
+  if (best.filePath !== ref.filePath || best.id === ref.fromNodeId) return false;
+  if (candidates.some((c) => c !== best && c.filePath === ref.filePath)) return false;
+  const sep = best.qualifiedName.lastIndexOf('::');
+  if (sep <= 0) return best.kind !== 'method';
+  const owner = best.qualifiedName.slice(0, sep);
+  if (best.kind !== 'method') {
+    const cut = owner.lastIndexOf('::');
+    const ownerName = cut >= 0 ? owner.slice(cut + 2) : owner;
+    const declared = (context.getNodesInFileNamed?.(best.filePath, ownerName) ?? context.getNodesInFile(best.filePath))
+      .filter((n) => n.qualifiedName === owner);
+    if (declared.every((n) => n.kind === 'function' || n.kind === 'method')) return true;
+  }
+  const from = context.getNodeById?.(ref.fromNodeId);
+  return !!from && (from.qualifiedName === owner || from.qualifiedName.startsWith(`${owner}::`));
+}
+
+/**
  * Find the best matching node when there are multiple candidates
  */
 function findBestMatch(
@@ -27097,7 +27201,7 @@ type Arity = { min: number; max: number } | null;
 /** Per context: node id → its same-owner overloads with their arities (null: none). */
 const OVERLOAD_SETS = new WeakMap<ResolutionContext, Map<string, { name: string; own: Arity; siblings: Array<{ id: string; arity: Arity }> } | null>>();
 
-function retargetSelfOverload(result: ResolvedRef, ref: UnresolvedRef, context: ResolutionContext): ResolvedRef {
+export function retargetSelfOverload(result: ResolvedRef, ref: UnresolvedRef, context: ResolutionContext): ResolvedRef {
   if (ref.referenceKind !== 'calls' || !OVERLOADING_LANGUAGES.has(ref.language)) return result;
   // C++ overload sets (templates, SFINAE tags, a `data()` on any container) are
   // only trusted for a method's call to itself.
