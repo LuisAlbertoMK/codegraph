@@ -4455,8 +4455,34 @@ export class ToolHandler {
       anchorSpans.set(anchor.file, spans);
     }
 
-    if (subgraph.nodes.size === 0) {
-      diag?.finishEmpty('no relevant code found — empty subgraph');
+    // A query whose every code-shaped name is absent from the index has no
+    // answer here, even when words INSIDE those names match unrelated code
+    // (#2462). `ZzzNoSuchParserQqq` matched the `Parser` in itself and filled
+    // the envelope with `parser.cpp` under a "Blast radius" and "verbatim
+    // source" header, while the note above disowned that code as the answer.
+    // A name with no such fragment (`qqqzzz`) already got the short honest
+    // answer below, so the cost of guessing a name depended on whether it
+    // happened to contain a word the index knows: 24,948 chars across 6 files
+    // against 384, for the same input class. A natural-language question
+    // contributes no code-shaped token, so this cannot reach the shape explore
+    // is tuned for; a bag where any named symbol resolves is answered normally
+    // (`Program ZzzNoSuchParserQqq`), with the missing name noted above it.
+    const queryTokens = exploreQueryTokens(matchQuery);
+    const namedTokens = queryTokens.filter(isIdentifierShapedToken);
+    let namesAllUnseen = false;
+    if (namedTokens.length > 0) {
+      try {
+        // A bare word is not code-shaped (`Program`, `Main`, `Entry`) but is
+        // still the symbol the query names — it keeps the normal answer.
+        namesAllUnseen = cg.getUnseenNames(namedTokens).length === namedTokens.length
+          && !queryTokens.some((t) => cg.getNodesByName(t).length > 0);
+      } catch { /* the guard must never fail an explore call */ }
+    }
+
+    if (subgraph.nodes.size === 0 || namesAllUnseen) {
+      diag?.finishEmpty(namesAllUnseen && subgraph.nodes.size > 0
+        ? 'no relevant code found — every named token is unindexed'
+        : 'no relevant code found — empty subgraph');
       const missNote = unresolvedPathSpans.length > 0
         ? ` (no indexed file uniquely matches ${unresolvedPathSpans.map((s) => `\`${s}\``).join(', ')})`
         : '';

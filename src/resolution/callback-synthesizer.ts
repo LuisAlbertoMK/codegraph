@@ -4307,7 +4307,15 @@ async function springEventEdges(ctx: ResolutionContext, onYield: MaybeYield): Pr
 // C# has no `signature` on method nodes, so the handler's request type is read from the class
 // base-list source (`: IRequestHandler<X,…>`), not a param signature.
 const MEDIATR_HANDLER_BASE_RE = /(?:IRequestHandler|INotificationHandler)\s*<\s*([A-Za-z_]\w*)/;
-const MEDIATR_DISPATCH_RE = /([A-Za-z_][\w.]*)\s*\.\s*(?:Send|Publish)\s*\(\s*(new\s+[A-Z]\w*|[A-Za-z_]\w*)/g;
+// The left boundary is load-bearing, not cosmetic. `hasSynthesisPattern` tests
+// this pattern against the content of EVERY indexed file, and without it the
+// receiver run plus the REQUIRED `.` backtracks over every start position of a
+// long token — O(n²) on exactly the files that are one long line (minified
+// bundles, base64 fixtures). Measured: 26 s for a single 100 KB token, which is
+// what made indexing a one-line 200 KB file look like a hang. `(?<![\w.])`
+// rejects every position inside the run in constant time; every site the old
+// pattern matched is still matched (see __tests__/synthesis-pattern-scan.test.ts).
+const MEDIATR_DISPATCH_RE = /(?<![\w.])([A-Za-z_][\w.]*)\s*\.\s*(?:Send|Publish)\s*\(\s*(new\s+[A-Z]\w*|[A-Za-z_]\w*)/g;
 const MEDIATR_RECEIVER_RE = /(?:mediator|sender|publisher)/i;
 const MEDIATR_CS_EXT = /\.cs$/;
 const MEDIATR_FANOUT_CAP = 80;
@@ -4421,7 +4429,11 @@ async function mediatrDispatchEdges(ctx: ResolutionContext, onYield: MaybeYield)
 // worker — gated by reading `include Sidekiq::Job|Worker` from the class body, since that mixin
 // is an external gem module that forms no resolvable edge. ActiveJob's `perform_later`/`_now` is
 // a different shape and deliberately not matched, so an ActiveJob-only app yields 0.
-const SIDEKIQ_DISPATCH_RE = /([A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)*)\s*\.\s*perform_(?:async|in|at)\b/g;
+// Left boundary for the same reason as MEDIATR_DISPATCH_RE above: this pattern
+// is part of `hasSynthesisPattern`, which runs against every indexed file. On a
+// long run of `[A-Za-z0-9_]` with no `.` the receiver plus the required `.` was
+// O(n²) (measured 18 s for a single 100 KB token).
+const SIDEKIQ_DISPATCH_RE = /(?<![\w:])([A-Z][A-Za-z0-9_]*(?:::[A-Z][A-Za-z0-9_]*)*)\s*\.\s*perform_(?:async|in|at)\b/g;
 const SIDEKIQ_WORKER_RE = /\binclude\s+Sidekiq::(?:Job|Worker)\b/;
 const SIDEKIQ_RB_EXT = /\.rb$/;
 const SIDEKIQ_FANOUT_CAP = 80;

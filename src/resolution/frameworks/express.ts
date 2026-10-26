@@ -64,7 +64,14 @@ const JS_KEYWORDS = new Set([
 function handlerCallNames(body: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
-  const callRe = /((?:[A-Za-z_$][\w$]*\s*\??\.\s*)*)([A-Za-z_$][\w$]*)\s*\(/g;
+  // The left boundary and the 32-segment cap are both load-bearing: without
+  // them a long token, or a long dotted run (`a.b.c...` — a minified bundle),
+  // makes this quadratic, because the engine retries the whole remaining run
+  // from every position inside it. Measured: 28 s on one 100 KB token, 61 s on
+  // 100 KB of `a.` repeated; both are ~2 ms now. A call site's receiver never
+  // starts inside an identifier and never has 32 dotted segments, so no match
+  // is lost.
+  const callRe = /(?<![A-Za-z_$])((?:[A-Za-z_$][\w$]*\s*\??\.\s*){0,32})([A-Za-z_$][\w$]*)\s*\(/g;
   let cm: RegExpExecArray | null;
   while ((cm = callRe.exec(body)) !== null) {
     const method = cm[2]!;

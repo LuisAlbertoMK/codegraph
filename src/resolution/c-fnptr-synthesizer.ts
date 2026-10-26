@@ -395,7 +395,7 @@ const ARRAY_TABLE_RE =
  *  fn-pointer field. The base may be a chain (`c->cmd->proc`) or carry array
  *  subscripts (`cmdnames[i].cmd_func`). An optional `)` before the call covers
  *  the parenthesized form `(cmdnames[i].cmd_func)(&ea)` vim uses. */
-const DISPATCH_RE = /((?:\w+(?:\s*\[[^\][]*\])?\s*(?:->|\.)\s*)+)(\w+)\s*\)?\s*\(/g;
+const DISPATCH_RE = /(?<!\w)((?:\w+(?:\s*\[[^\][]*\])?\s*(?:->|\.)\s*){1,32})(\w+)\s*\)?\s*\(/g;
 /** Bare-array dispatch: `tbl[i](…)` or the explicit-deref `(*tbl[i])(…)`. The
  *  subscript may itself contain a call (`tbl[GC_TYPE(p)](…)`), so the index
  *  class excludes only brackets. Precision comes from the `arrayReg` gate —

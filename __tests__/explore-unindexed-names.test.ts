@@ -175,6 +175,36 @@ describe('#2462 — explore says which named symbols are not in the index', () =
     expect(text).not.toContain('the code below');
   });
 
+  it('a query naming only code the index lacks does not answer with fragment matches', async () => {
+    // `ZzzNoSuchParserQqq` contains `Parser`, a symbol this fixture indexes, so
+    // the word search matched `src/native/parser.cpp`. Answering with it filled
+    // the whole envelope — measured at 24,948 chars across 6 files on this
+    // repo's own index — under a "Blast radius" and "verbatim source" header,
+    // while the note above said the code below was not the answer. A name with
+    // no such fragment (`qqqzzz`) already got the short honest answer, so the
+    // cost of guessing a name depended on whether it happened to contain a
+    // word the index knows.
+    const { text, isError } = await explore('ZzzNoSuchParserQqq');
+    expect(isError).toBe(false);
+    expect(text).toContain('No relevant code found');
+    expect(text).toContain('**Not in the index:** `ZzzNoSuchParserQqq`.');
+    expect(text).not.toContain('**`src/native/parser.cpp`**');
+    expect(text).not.toContain('**Source Code**');
+  });
+
+  it('still answers when any named symbol resolves, and never for a question', async () => {
+    // One real name in the bag is enough to answer normally: the missing one is
+    // named above the code, as #2462 asks.
+    const mixed = await explore('Program ZzzNoSuchParserQqq');
+    expect(mixed.text).toContain('**`src/Agent/Program.cs`**');
+    expect(mixed.text).toContain('**Not in the index:** `ZzzNoSuchParserQqq`.');
+    // A natural-language question contributes no code-shaped token, so the
+    // guard that fires above cannot reach the shape explore is tuned for.
+    const question = await explore('How does the native parser read its text?');
+    expect(question.text).not.toContain('Not in the index');
+    expect(question.text).not.toContain('No relevant code found');
+  });
+
   it('goes away once the folder is re-included and synced', async () => {
     fs.writeFileSync(path.join(dir, '.gitignore'), 'bin/\nobj/\n!/build/\n');
     await cg.sync();

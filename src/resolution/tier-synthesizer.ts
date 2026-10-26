@@ -368,9 +368,21 @@ const GENERIC = String.raw`(?:<[^()<>]*(?:<[^()<>]*>[^()<>]*)*>)?`;
  * dotted chain behind it, which on vscode made this the slowest pass.
  */
 const CHAIN_START = String.raw`(?<![A-Za-z_$])(?<![A-Za-z_$][\w$]+)`;
+/**
+ * Maximum dotted segments a receiver may have. Bounds the chain so a scan of a
+ * file is linear: with an unbounded `*`, a minified line (or any long run of
+ * `a.b.c…`) costs O(n²) — the engine retries the whole remaining chain from
+ * every start position. Measured on 100 KB of `a.` repeated: 49–60 s per
+ * pattern before the cap, 2–3 ms after. No hand-written or generated receiver
+ * has 32 segments, so the cap changes no real match; a chain longer than it is
+ * noise a tier bridge would only mis-attribute.
+ */
+const CHAIN_MAX_SEGMENTS = 32;
+/** A receiver chain, bounded — see {@link CHAIN_MAX_SEGMENTS}. */
+const RECEIVER_CHAIN = String.raw`((?:this\s*\.\s*)?[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*){0,${CHAIN_MAX_SEGMENTS}})`;
 const BARE_CLIENT_CALL = new RegExp(String.raw`(?:(?:window|globalThis|global)\s*\.\s*)?\b(fetch|\$fetch|ofetch|axios|ky|got|useFetch|useSWR)\s*${GENERIC}\s*\(`, 'g');
 const MEMBER_CLIENT_CALL = new RegExp(
-  String.raw`${CHAIN_START}((?:this\s*\.\s*)?[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\.\s*(get|post|put|patch|delete|head|options|request|\$get|\$post|\$put|\$patch|\$delete)\s*${GENERIC}\s*\(`,
+  String.raw`${CHAIN_START}${RECEIVER_CHAIN}\s*\.\s*(get|post|put|patch|delete|head|options|request|\$get|\$post|\$put|\$patch|\$delete)\s*${GENERIC}\s*\(`,
   'g'
 );
 
@@ -577,10 +589,10 @@ function collectHttpSites(ctx: ResolutionContext, facts: FileFacts, sites: HttpS
 // 2. Queue job → consumer
 // =============================================================================
 
-const QUEUE_ADD = new RegExp(CHAIN_START + /((?:this\s*\.\s*)?[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\.\s*add\s*\(\s*(['"`])([^'"`]+)\2/.source, 'g');
+const QUEUE_ADD = new RegExp(CHAIN_START + RECEIVER_CHAIN + /\s*\.\s*add\s*\(\s*(['"`])([^'"`]+)\2/.source, 'g');
 const QUEUE_SHAPED = /queue|jobs?$|worker|bull|flow|producer/i;
 const NEW_WORKER = /\bnew\s+Worker\s*(?:<[^>]*>)?\s*\(\s*(['"`])([^'"`]+)\1\s*,\s*/g;
-const QUEUE_PROCESS = new RegExp(CHAIN_START + /((?:this\s*\.\s*)?[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\.\s*process\s*\(\s*(?:(['"`])([^'"`]+)\2\s*,\s*)?(?:\d+\s*,\s*)?/.source, 'g');
+const QUEUE_PROCESS = new RegExp(CHAIN_START + RECEIVER_CHAIN + /\s*\.\s*process\s*\(\s*(?:(['"`])([^'"`]+)\2\s*,\s*)?(?:\d+\s*,\s*)?/.source, 'g');
 /** A handler argument: a named function (group 1), or an inline function. */
 const HANDLER_ARG = /^(?:(?:async\s+)?([A-Za-z_$][\w$.]*)\s*(?:[,)]|$)|(?:async\s*)?(?:\(|function\b|[A-Za-z_$][\w$]*\s*=>))/;
 
@@ -767,9 +779,11 @@ function pairQueue(producers: readonly QueueProducer[], consumers: readonly Queu
 // =============================================================================
 
 // A word character opens these chains, so a word's first character is the
-// only start that can match (same argument as CHAIN_START).
-const EMIT = /(?<![\w$])((?:[\w$]+(?:\([^()]*\))?\s*\.\s*)*[\w$]+)\s*\.\s*(emit|emitAsync)\s*\(\s*(['"`])([^'"`\n]+)\3/g;
-const SOCKET_ON = /(?<![\w$])((?:[\w$]+(?:\([^()]*\))?\s*\.\s*)*[\w$]+)\s*\.\s*(?:on|once)\s*\(\s*(['"`])([^'"`\n]+)\2\s*,\s*/g;
+// only start that can match (same argument as CHAIN_START). The chain is
+// bounded for the same reason as RECEIVER_CHAIN: unbounded, a minified line
+// cost O(n²) — measured 58 s for 100 KB of `a.` repeated, 2 ms bounded.
+const EMIT = /(?<![\w$])((?:[\w$]+(?:\([^()]*\))?\s*\.\s*){0,32}[\w$]+)\s*\.\s*(emit|emitAsync)\s*\(\s*(['"`])([^'"`\n]+)\3/g;
+const SOCKET_ON = /(?<![\w$])((?:[\w$]+(?:\([^()]*\))?\s*\.\s*){0,32}[\w$]+)\s*\.\s*(?:on|once)\s*\(\s*(['"`])([^'"`\n]+)\2\s*,\s*/g;
 const SOCKET_WORDS = /^(?:socket|io|ws|wss|client|server|namespace|nsp|conn|connection|gateway|broadcast|to|in|of|except|volatile|local|sockets|socketServer|wsServer|room|channel|pusher|ably|ioClient|socketClient|sock)$/;
 const BUS_WORDS = /^(?:eventEmitter|emitter|events|eventBus|bus|dispatcher|pubsub|publisher|eventPublisher|ee|hub|mediator|broker|messageBus|appEvents|domainEvents|eventsService|eventService)$/;
 /** The transport's own events — every socket emits and handles them; pairing them says nothing. */

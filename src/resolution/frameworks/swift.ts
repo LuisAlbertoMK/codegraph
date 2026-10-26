@@ -426,7 +426,10 @@ const SWIFT_NOT_CALLS = new Set(['if', 'guard', 'switch', 'while', 'for', 'retur
 function closureCallNames(body: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
-  const callRe = /((?:[A-Za-z_]\w*\s*[?!]?\.\s*)*)([A-Za-z_]\w*)\s*\(/g;
+  // Left boundary plus a 32-segment cap, for the same reason as express.ts's
+  // handlerCallNames: a single long token made this quadratic (19-49 s on
+  // 100 KB), and no call site starts inside an identifier or has 32 segments.
+  const callRe = /(?<![A-Za-z_])((?:[A-Za-z_]\w*\s*[?!]?\.\s*){0,32})([A-Za-z_]\w*)\s*\(/g;
   let m: RegExpExecArray | null;
   while ((m = callRe.exec(body)) !== null) {
     const callee = m[2]!;
