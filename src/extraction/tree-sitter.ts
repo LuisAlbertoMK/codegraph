@@ -7125,10 +7125,17 @@ export class TreeSitterExtractor {
     //    (e.g. `@A class Foo {} @B class Bar {}` would otherwise
     //    attribute @A to Bar).
     //
-    //    Note on identity: tree-sitter web bindings return fresh JS
-    //    wrapper objects from `parent`/`namedChild` navigation, so
-    //    `sibling === declNode` is unreliable — `startIndex` does
-    //    the matching instead.
+    //    The walk starts from `previousNamedSibling`, never from a
+    //    sibling index found by scanning `parent.namedChild(i)`: locating
+    //    the declaration that way costs one WASM round-trip per sibling of
+    //    the PARENT, so a parent holding many declarations (a minified
+    //    bundle — one `program` of thousands of statements — or any large
+    //    flat module) made this O(n^2). Measured on a 1 MB single-line file:
+    //    158 s of a 183 s index, against a fraction of a second once the
+    //    walk starts from the declaration's own previous sibling (a single
+    //    C-side call). It also side-steps the identity problem: web bindings
+    //    return fresh JS wrappers, so `sibling === declNode` never matched
+    //    and `startIndex` had to be compared instead — unnecessary now.
     //
     //    A grammar that wraps the declaration (Dart's `declaration`
     //    around a member with no body) puts the annotations before the
@@ -7136,28 +7143,12 @@ export class TreeSitterExtractor {
     //    between the annotations and the declaration (Dart) steps over them.
     const anchor = this.extractor?.getDeclarationWrapper?.(declNode) ?? declNode;
     const stepOver = this.extractor?.decoratorStepOverTypes;
-    const parent = anchor.parent;
-    if (parent) {
-      const declStart = anchor.startIndex;
-      let declIdx = -1;
-      for (let i = 0; i < parent.namedChildCount; i++) {
-        const sibling = parent.namedChild(i);
-        if (sibling && sibling.startIndex === declStart) {
-          declIdx = i;
-          break;
-        }
+    for (let sibling = anchor.previousNamedSibling; sibling; sibling = sibling.previousNamedSibling) {
+      if (stepOver?.includes(sibling.type)) continue;
+      if (sibling.type !== 'decorator' && sibling.type !== 'annotation' && sibling.type !== 'marker_annotation') {
+        break; // non-decorator separator → stop consuming
       }
-      if (declIdx > 0) {
-        for (let j = declIdx - 1; j >= 0; j--) {
-          const sibling = parent.namedChild(j);
-          if (!sibling) continue;
-          if (stepOver?.includes(sibling.type)) continue;
-          if (sibling.type !== 'decorator' && sibling.type !== 'annotation' && sibling.type !== 'marker_annotation') {
-            break; // non-decorator separator → stop consuming
-          }
-          consider(sibling);
-        }
-      }
+      consider(sibling);
     }
   }
 
