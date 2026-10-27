@@ -2586,40 +2586,56 @@ export function isCppConstructorDeclaration(node: SyntaxNode): boolean {
     && getChildByField(declarator, 'declarator')?.text === getChildByField(owner, 'name')?.text;
 }
 
-/**
- * The access specifier that governs a class body's members, read from the body
- * once and remembered for the rest of the file.
- *
- * `getVisibility` is asked this question once per member, and the answer is the
- * same for every member of one body (the first `access_specifier` among the
- * body's children — the rule this extractor has always used). Re-scanning the
- * body for each member made it O(members²): 31.6 s on a single 3000-member
- * `struct` that declares no specifier at all, which is the common shape for
- * generated C headers, since a struct's members are public by default. Cached
- * per parse tree — `node.id` is only unique inside one tree — so the scan
- * happens once per body and no answer changes.
- */
-const VISIBILITY_BY_BODY = new WeakMap<object, Map<number, 'public' | 'private' | 'protected' | null>>();
+/** A member's visibility, or nothing when no specifier precedes it. */
+type CppVisibility = 'public' | 'private' | 'protected';
 
-function cppBodyVisibility(body: SyntaxNode): 'public' | 'private' | 'protected' | undefined {
+/**
+ * Visibility of every member of a class body, keyed by member node id, from the
+ * nearest `access_specifier` written BEFORE it — the rule C++ means and the one
+ * the native kernel implements (docs/design/ccpp-kernel-port-checklist.md:
+ * "getVisibility = nearest preceding `access_specifier` scan in the parent's
+ * children"). The JavaScript extractor used to answer with the FIRST specifier
+ * in the body instead, for every member: a method under a later `private:`
+ * came back `public`, and a member written above the first specifier took that
+ * specifier's label. That also made the kernel and the JS path disagree on
+ * every multi-section body.
+ *
+ * Built in ONE pass over the body's children the first time a member of that
+ * body asks, then a lookup — so a query is O(1) and a body costs one scan.
+ * Scanning per member instead was O(members²): 31.6 s on a single 3000-member
+ * `struct` with no specifier at all (public by default, which is what generated
+ * C headers look like), 47 s at 4000 members.
+ *
+ * Cached per parse tree, since `node.id` is only unique inside one tree.
+ */
+const VISIBILITY_BY_BODY = new WeakMap<object, Map<number, Map<number, CppVisibility>>>();
+
+function cppBodyVisibility(body: SyntaxNode): Map<number, CppVisibility> {
   let perTree = VISIBILITY_BY_BODY.get(body.tree);
   if (!perTree) {
     perTree = new Map();
     VISIBILITY_BY_BODY.set(body.tree, perTree);
   }
   const cached = perTree.get(body.id);
-  if (cached !== undefined) return cached ?? undefined;
-  let found: 'public' | 'private' | 'protected' | undefined;
+  if (cached) return cached;
+  const members = new Map<number, CppVisibility>();
+  let current: CppVisibility | undefined;
   for (let i = 0; i < body.childCount; i++) {
     const child = body.child(i);
-    if (child?.type !== 'access_specifier') continue;
-    const text = child.text;
-    if (text.includes('public')) { found = 'public'; break; }
-    if (text.includes('private')) { found = 'private'; break; }
-    if (text.includes('protected')) { found = 'protected'; break; }
+    if (!child) continue;
+    if (child.type === 'access_specifier') {
+      const text = child.text;
+      // `signals:` and `slots:` (Qt) match none of these and leave the current
+      // section in force, which is how the scan has always read them.
+      if (text.includes('public')) current = 'public';
+      else if (text.includes('private')) current = 'private';
+      else if (text.includes('protected')) current = 'protected';
+      continue;
+    }
+    if (current) members.set(child.id, current);
   }
-  perTree.set(body.id, found ?? null);
-  return found;
+  perTree.set(body.id, members);
+  return members;
 }
 
 export const cppExtractor: LanguageExtractor = {
@@ -2682,9 +2698,9 @@ export const cppExtractor: LanguageExtractor = {
     return parameters ? getNodeText(parameters, source) + (node.type === 'declaration' ? ';' : '') : undefined;
   },
   getVisibility: (node) => {
-    // Check for access specifier in parent
+    // The nearest preceding `access_specifier` in the parent's children.
     const parent = node.parent;
-    return parent ? cppBodyVisibility(parent) : undefined;
+    return parent ? cppBodyVisibility(parent).get(node.id) : undefined;
   },
   resolveTypeAliasKind: (node, _source) => {
     // C++ typedef: `typedef enum { ... } name;`, `typedef struct { ... } name;`,

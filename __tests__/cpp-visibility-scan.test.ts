@@ -69,6 +69,44 @@ describe('C++ member visibility', () => {
     expect(visibility('size') ?? null).toBeNull();
   }, 120_000);
 
+  it('follows each section of a body, not the first one it finds', async () => {
+    // The nearest PRECEDING specifier answers for a member — what C++ means and
+    // what the native kernel does. Answering with the body's FIRST specifier
+    // labelled `hidden` public, and `early` — written before any specifier —
+    // took `public` from the section below it.
+    fs.writeFileSync(
+      path.join(root, 'src', 'sections.cpp'),
+      'class Sections {\n' +
+      '  int early() { return 0; }\n' +
+      '\npublic:\n' +
+      '  int openMethod() { return 1; }\n' +
+      '\nprivate:\n' +
+      '  int hidden() { return 2; }\n' +
+      '\nprotected:\n' +
+      '  int derivedOnly() { return 3; }\n' +
+      '};\n\n' +
+      'struct Defaults {\n' +
+      '  int plain() { return 4; }\n' +
+      'private:\n' +
+      '  int restricted() { return 5; }\n' +
+      '};\n',
+    );
+
+    cg = await CodeGraph.init(root, { index: true });
+    const visibility = (name: string): string | null | undefined => {
+      const node = cg!.getNodesInFile('src/sections.cpp').find((n) => n.name === name);
+      expect(node, `no node for ${name}`).toBeTruthy();
+      return node!.visibility ?? null;
+    };
+
+    expect(visibility('early')).toBeNull();
+    expect(visibility('openMethod')).toBe('public');
+    expect(visibility('hidden')).toBe('private');
+    expect(visibility('derivedOnly')).toBe('protected');
+    expect(visibility('plain')).toBeNull();
+    expect(visibility('restricted')).toBe('private');
+  }, 120_000);
+
   it('indexes a large specifier-less body in time linear in its members', async () => {
     const methods = Array.from({ length: MEMBERS }, (_, i) => `  int m${i}() { return ${i}; }\n`).join('');
     fs.writeFileSync(path.join(root, 'src', 'big.cpp'), `struct Big {\n${methods}};\n`);
