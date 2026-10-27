@@ -2586,6 +2586,42 @@ export function isCppConstructorDeclaration(node: SyntaxNode): boolean {
     && getChildByField(declarator, 'declarator')?.text === getChildByField(owner, 'name')?.text;
 }
 
+/**
+ * The access specifier that governs a class body's members, read from the body
+ * once and remembered for the rest of the file.
+ *
+ * `getVisibility` is asked this question once per member, and the answer is the
+ * same for every member of one body (the first `access_specifier` among the
+ * body's children — the rule this extractor has always used). Re-scanning the
+ * body for each member made it O(members²): 31.6 s on a single 3000-member
+ * `struct` that declares no specifier at all, which is the common shape for
+ * generated C headers, since a struct's members are public by default. Cached
+ * per parse tree — `node.id` is only unique inside one tree — so the scan
+ * happens once per body and no answer changes.
+ */
+const VISIBILITY_BY_BODY = new WeakMap<object, Map<number, 'public' | 'private' | 'protected' | null>>();
+
+function cppBodyVisibility(body: SyntaxNode): 'public' | 'private' | 'protected' | undefined {
+  let perTree = VISIBILITY_BY_BODY.get(body.tree);
+  if (!perTree) {
+    perTree = new Map();
+    VISIBILITY_BY_BODY.set(body.tree, perTree);
+  }
+  const cached = perTree.get(body.id);
+  if (cached !== undefined) return cached ?? undefined;
+  let found: 'public' | 'private' | 'protected' | undefined;
+  for (let i = 0; i < body.childCount; i++) {
+    const child = body.child(i);
+    if (child?.type !== 'access_specifier') continue;
+    const text = child.text;
+    if (text.includes('public')) { found = 'public'; break; }
+    if (text.includes('private')) { found = 'private'; break; }
+    if (text.includes('protected')) { found = 'protected'; break; }
+  }
+  perTree.set(body.id, found ?? null);
+  return found;
+}
+
 export const cppExtractor: LanguageExtractor = {
   // Recover macro-annotated class/struct definitions (`class MYMODULE_API Foo : Base`,
   // #1061/#946) and macro-prefixed functions (`FORCEINLINE FString Foo()`, #1093
@@ -2648,18 +2684,7 @@ export const cppExtractor: LanguageExtractor = {
   getVisibility: (node) => {
     // Check for access specifier in parent
     const parent = node.parent;
-    if (parent) {
-      for (let i = 0; i < parent.childCount; i++) {
-        const child = parent.child(i);
-        if (child?.type === 'access_specifier') {
-          const text = child.text;
-          if (text.includes('public')) return 'public';
-          if (text.includes('private')) return 'private';
-          if (text.includes('protected')) return 'protected';
-        }
-      }
-    }
-    return undefined;
+    return parent ? cppBodyVisibility(parent) : undefined;
   },
   resolveTypeAliasKind: (node, _source) => {
     // C++ typedef: `typedef enum { ... } name;`, `typedef struct { ... } name;`,
