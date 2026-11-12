@@ -59,4 +59,4 @@ gh pr merge <n> --merge
 git push origin --delete chore/sync-upstream
 ```
 
-Last synced: `efff7457` (2026-10-21) — 7 commits, clean merge, PR #3.
+Last synced: `f72c9d2e` (2026-11-12) — 163 upstream commits, merged via PR, conflicts in .gitattributes, CHANGELOG.md, package.json, src/bin/codegraph.ts, src/mcp/tools.ts, src/resolution/callback-synthesizer.ts.
