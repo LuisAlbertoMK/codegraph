@@ -137,9 +137,9 @@ describe('codegraph_files --format package', () => {
     expect(result.isError).toBeFalsy();
     const text = result.content[0]!.text as string;
 
-    expect(text).toContain('**@acme/api (apps/api) — 1 file**');
+    expect(text).toContain('**@acme/api in apps/api (1 file)**');
     expect(text).toContain('- apps/api/src/handler.ts');
-    expect(text).toContain('**@acme/web (apps/web) — 1 file**');
+    expect(text).toContain('**@acme/web in apps/web (1 file)**');
     expect(text).toContain('- apps/web/src/view.tsx');
   });
 
@@ -151,7 +151,7 @@ describe('codegraph_files --format package', () => {
     });
     const text = result.content[0]!.text as string;
 
-    expect(text).toContain('**no owning package — 1 file**');
+    expect(text).toContain('**no owning package (1 file)**');
     expect(text).toContain('- scripts/tool.ts');
   });
 });
