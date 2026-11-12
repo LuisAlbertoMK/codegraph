@@ -85,6 +85,15 @@ export function stripCppTemplateArguments(text: string): string {
 
 /** The `::` segments of a written type, or null when it is not a plain (possibly qualified) type name. */
 function cppTypeName(raw: string): TypeName | null {
+  let name = TYPE_NAMES.get(raw);
+  if (name === undefined) {
+    if (TYPE_NAMES.size >= 50_000) TYPE_NAMES.clear();
+    TYPE_NAMES.set(raw, (name = readCppTypeName(raw)));
+  }
+  return name;
+}
+
+function readCppTypeName(raw: string): TypeName | null {
   const parts: string[] = [];
   const templated: boolean[] = [];
   let depth = 0;
@@ -121,6 +130,9 @@ function cppTypeName(raw: string): TypeName | null {
   if (parts.length === 0 || !parts.every((p) => /^[A-Za-z_]\w*$/.test(p))) return null;
   return global ? { names: parts, templated, global } : { names: parts, templated };
 }
+
+/** Each written type's name, which depends on nothing else. Callers only read it. */
+const TYPE_NAMES = new Map<string, TypeName | null>();
 
 /** The scopes a written name is looked up from: the global scope alone for `::Name`. */
 function scopesFor(name: TypeName, scopes: readonly string[]): readonly string[] {
@@ -291,8 +303,10 @@ function localAliasedType(name: string, caller: Node | null | undefined, ref: Un
   if (!caller || (caller.kind !== 'function' && caller.kind !== 'method') || caller.filePath !== ref.filePath) return undefined;
   const lines = linesOf(ref.filePath, context);
   if (!lines) return undefined;
+  const aliasLines = localAliasLines(caller, lines, context);
+  if (aliasLines.length === 0) return undefined;
   const declares = new RegExp(String.raw`\b(?:using\s+${escapeRegExp(name)}\s*=|typedef\b[^;]*\b${escapeRegExp(name)}\s*[;,])`);
-  for (const i of localAliasLines(caller, lines, context)) {
+  for (const i of aliasLines) {
     if (i > ref.line - 1) continue;
     const line = lines[i]!;
     if (line.includes(name) && declares.test(line)) return aliasedTypeIn(line, name);
@@ -305,7 +319,9 @@ type Declared =
   | { alias: Node }
   /** A class, struct or union, by its qualified name. */
   | { cls: string }
-  /** An enum, namespace or other non-class type. */
+  /** An enum, by its declarations. */
+  | { enums: Node[] }
+  /** A namespace or other non-class type. */
   | 'other'
   /**
    * Aliases naming different types, none of them the calling file's: rocksdb's
@@ -319,8 +335,14 @@ type Visible = (n: Node) => boolean;
 
 /** C and C++ declarations named `name` that can stand for a type or scope. */
 function typeDeclarations(name: string, context: ResolutionContext, visible?: Visible): Node[] {
-  return context.getNodesByName(name).filter((n) =>
-    isCFamily(n) && (n.kind === 'type_alias' || DECLARING_KINDS.has(n.kind)) && (!visible || visible(n)));
+  let memo = TYPE_DECLARATIONS.get(context);
+  if (!memo) TYPE_DECLARATIONS.set(context, (memo = new Map()));
+  let declared = memo.get(name);
+  if (!declared) {
+    declared = context.getNodesByName(name).filter((n) => isCFamily(n) && (n.kind === 'type_alias' || DECLARING_KINDS.has(n.kind)));
+    memo.set(name, declared);
+  }
+  return visible ? declared.filter((n) => visible(n)) : declared;
 }
 
 function declaredIn(
@@ -338,6 +360,8 @@ function declaredIn(
   if (here.length === 0) return undefined;
   // `typedef struct Node Node;` declares the struct as well.
   if (here.some((n) => CLASS_KINDS.has(n.kind))) return { cls: qualified };
+  const enums = here.filter((n) => n.kind === 'enum');
+  if (enums.length > 0) return { enums };
   if (here.some((n) => n.kind !== 'type_alias')) return 'other';
   const alias = pickAlias(here, ref, context);
   return alias ? { alias } : { ambiguous: here };
@@ -364,11 +388,14 @@ function pickAlias(aliases: Node[], ref: UnresolvedRef, context: ResolutionConte
 }
 
 const BASES = new WeakMap<ResolutionContext, Map<string, string[]>>();
+/** Per context: a name → the C and C++ declarations of a type of that name. */
+const TYPE_DECLARATIONS = new WeakMap<ResolutionContext, Map<string, Node[]>>();
 const TEMPLATE_PARAMETERS = new WeakMap<ResolutionContext, Map<string, ReadonlySet<string>>>();
 
 /** Drop the memos of class bases, template parameters and local aliases (see ReferenceResolver.clearCaches). */
 export function clearCppTypeAliasMemos(context: ResolutionContext): void {
   BASES.delete(context);
+  TYPE_DECLARATIONS.delete(context);
   TEMPLATE_PARAMETERS.delete(context);
   LOCAL_ALIAS_LINES.delete(context);
 }
@@ -664,13 +691,49 @@ export function cppClassNamed(
 ): CppNamedClass {
   const name = cppTypeName(written);
   if (!name) return null;
-  const { found, next } = lookupSegments(name, scopes, ref, context, visible);
+  return classFound(name, lookupSegments(name, scopes, ref, context, visible), ref, context);
+}
+
+/** What a C or C++ type name names when it is looked up for what it declares (see cppTypeNamed). */
+export type CppNamedType = CppNamedClass | { enums: Node[] };
+
+/**
+ * What a C or C++ type written as `written` declares, looked up as cppClassNamed
+ * looks it up: the class, an enum, or the alias the name ends on, not followed
+ * to the type it names, so an edge says what the code wrote.
+ */
+export function cppTypeNamed(
+  written: string,
+  scopes: readonly string[],
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+  visible?: Visible,
+): CppNamedType {
+  const name = cppTypeName(written);
+  if (!name) return null;
+  // (A reference carries its name without template arguments, so an alias
+  // template can't be told by them. A name that finds one was written with them.)
+  const lookup = lookupSegments({ ...name, templated: name.names.map(() => true) }, scopes, ref, context, visible);
+  const { found, next } = lookup;
+  if (found && typeof found === 'object' && ('enums' in found || ('alias' in found && next === name.names.length))) return found;
+  return classFound(name, lookup, ref, context);
+}
+
+/** The class a lookup of `name` found, followed through the alias it reached. */
+function classFound(
+  name: TypeName,
+  { found, next }: { found: Declared; next: number },
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+): CppNamedClass {
   if (found === undefined) return undefined;
-  if (typeof found !== 'object') return null;
+  if (typeof found !== 'object' || 'enums' in found) return null;
   if ('cls' in found) return found;
   if ('ambiguous' in found) {
-    // An alias each `#if` arm declares differently: the first declaration.
-    const [first] = [...found.ambiguous].sort((a, b) => a.filePath.localeCompare(b.filePath) || a.startLine - b.startLine);
+    // An alias each `#if` arm declares differently: the first declaration, by
+    // file in code-unit order (localeCompare follows the host's locale).
+    const [first] = [...found.ambiguous].sort((a, b) =>
+      (a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0) || a.startLine - b.startLine);
     return next === name.names.length ? { alias: first! } : null;
   }
   const alias = found.alias;
@@ -706,7 +769,7 @@ export function cppAliasedTypeWritten(
   const name = cppTypeName(written);
   if (!name) return undefined;
   const { found, next } = lookupSegments(name, scopesFor(name, scopes), ref, context);
-  if (!found || typeof found !== 'object' || 'cls' in found) return undefined;
+  if (!found || typeof found !== 'object' || 'cls' in found || 'enums' in found) return undefined;
   if ('ambiguous' in found || next !== name.names.length || isAliasTemplate(found.alias, context)) return null;
   const text = declarationText(found.alias, context);
   const aliased = text ? aliasedTypeIn(text, found.alias.name) : null;

@@ -20,18 +20,24 @@
 
 import * as fs from 'fs';
 import * as net from 'net';
+import { findNearestCodeGraphRoot } from '../directory';
 import { HOST_PPID_ENV } from '../extraction/wasm-runtime-flags';
 import { DaemonClientHello, DaemonHello, MAX_HELLO_LINE_BYTES } from './daemon';
 import { EARLY_PPID } from './early-ppid';
 import { supervisionLostReason } from './ppid-watchdog';
 import { armStartupHandshakeTimeout } from './startup-handshake';
 import { treatStdinFailureAsShutdown } from './stdin-teardown';
+import { treatStdoutFailureAsShutdown } from './stdout-teardown';
 import { CodeGraphPackageVersion, isOlderRelease } from './version';
-import { SERVER_INFO, PROTOCOL_VERSION, initializeInstructions } from './session';
+import { SERVER_INFO, PROTOCOL_VERSION, initializeInstructions, toolCallArguments, TOOL_ARGUMENTS_NOT_OBJECT } from './session';
 import { SERVER_INSTRUCTIONS } from './server-instructions';
 import { getStaticTools } from './tools';
 import { ErrorCodes } from './transport';
 import { ExploreSessionState } from './explore-session-state';
+import {
+  INDEX_VERSION_WARNING_PREFIX,
+  IndexVersionWarningState,
+} from './index-version-warning';
 import { getTelemetry, ClientInfo } from '../telemetry';
 import { installMainThreadWatchdog, WatchdogHandle } from './liveness-watchdog';
 import type { MCPEngine } from './engine';
@@ -292,6 +298,30 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
   // Only the daemon-unavailable fallback below uses it; when the daemon is up,
   // the tracking happens on the daemon's own MCPSession.
   const exploreSession = new ExploreSessionState();
+  // The fallback is still one MCP client session. Keep its one-time warnings
+  // local just as MCPSession does when the shared daemon is available.
+  const indexVersionWarnings = new IndexVersionWarningState();
+  const recordDaemonWarning = (requestLine: string | undefined, response: JsonRpc): void => {
+    if (!requestLine) return;
+    const result = response.result as { content?: Array<{ type?: unknown; text?: unknown }> } | undefined;
+    const first = result?.content?.[0];
+    if (first?.type !== 'text' || typeof first.text !== 'string') return;
+    if (!first.text.startsWith(INDEX_VERSION_WARNING_PREFIX)) return;
+
+    let request: JsonRpc;
+    try { request = JSON.parse(requestLine) as JsonRpc; } catch { return; }
+    const params = request.params as {
+      arguments?: { projectPath?: unknown };
+    } | undefined;
+    const requestedPath = params?.arguments?.projectPath;
+    let root = deps.root;
+    if (typeof requestedPath === 'string') {
+      const resolved = findNearestCodeGraphRoot(requestedPath);
+      if (!resolved) return;
+      root = resolved;
+    }
+    indexVersionWarnings.claim(root);
+  };
   const trackInflight = (line: string): void => {
     try {
       const m = JSON.parse(line) as JsonRpc;
@@ -360,10 +390,15 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
     let msg: JsonRpc; try { msg = JSON.parse(line) as JsonRpc; } catch { return; }
     const id = msg.id;
     if (msg.method === 'tools/call' && id !== undefined) {
+      const params = (msg.params || {}) as { name: string; arguments?: unknown };
+      const args = toolCallArguments(params);
+      if (!args) {
+        writeClient({ jsonrpc: '2.0', id, error: { code: ErrorCodes.InvalidParams, message: TOOL_ARGUMENTS_NOT_OBJECT } });
+        return;
+      }
       try {
         const local = await ensureEngine();
-        const params = (msg.params || {}) as { name: string; arguments?: Record<string, unknown> };
-        const result = await local.getToolHandler().execute(params.name, params.arguments || {}, exploreSession);
+        const result = await local.getToolHandler().execute(params.name, args, exploreSession, indexVersionWarnings);
         writeClient({ jsonrpc: '2.0', id, result });
         getTelemetry().recordUsage('mcp_tool', params.name, !result.isError, telemetryClient);
       } catch (err) {
@@ -443,6 +478,10 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
   // instead of a clean close; destroying the stream stops a hung fd from
   // busy-spinning the event loop (#799).
   treatStdinFailureAsShutdown(shutdown);
+  // A host can also stop reading our output while it keeps stdin open and
+  // stays alive: shut down the same way, which closes only this session's
+  // daemon connection and stops its own engines (#2991).
+  treatStdoutFailureAsShutdown(shutdown);
   startPpidWatchdogNoSocket(shutdown);
   // Backstop for a launch abandoned before any of the above can see it: killed
   // launcher + held-open pipes + reparent that beat the EARLY_PPID capture
@@ -523,6 +562,7 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
         try { resp = JSON.parse(line) as JsonRpc; } catch { /* not JSON — relay verbatim */ }
         if (process.env.CODEGRAPH_MCP_DEBUG) process.stderr.write(`[mcp-debug] daemon->proxy ${line.slice(0, 80)}\n`);
         if (resp && resp.id !== undefined && ('result' in resp || 'error' in resp)) {
+          recordDaemonWarning(inflight.get(resp.id), resp);
           inflight.delete(resp.id); // answered — no longer in flight
           // Suppress the daemon's reply to the initialize we forwarded to prime it
           // (the client already got the local handshake response).
